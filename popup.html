@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SBC UI</title>
+  <script src="./tw.js"></script>
+  <style>
+    body { width: 700px; max-height: 750px; }
+    .tab-btn.active { background-color: #3b82f6; color: white; }
+    .action-btn { transition: all 0.1s; }
+    .pinned { border-left: 3px solid #fbbf24; }
+    .script-item { display: flex; align-items: center; justify-content: space-between; }
+    .log-entry { font-family: monospace; font-size: 11px; padding: 2px 4px; border-bottom: 1px solid #eee; }
+    .log-info { color: #2563eb; }
+    .log-success { color: #16a34a; }
+    .log-error { color: #dc2626; }
+    .toggle-switch { position: relative; display: inline-block; width: 36px; height: 20px; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .2s; border-radius: 20px; }
+    .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 2px; bottom: 2px; background-color: white; transition: .2s; border-radius: 50%; }
+    input:checked + .slider { background-color: #3b82f6; }
+    input:checked + .slider:before { transform: translateX(16px); }
+    .spoof-file-name { font-size: 10px; color: #6b7280; margin-top: 4px; word-break: break-all; }
+  </style>
+</head>
+<body class="bg-gray-100 p-4">
+  <div class="bg-white rounded-lg shadow-lg p-4">
+    <h1 class="text-xl font-bold text-gray-800 mb-3 flex items-center">
+      <span class="w-3 h-3 bg-green-500 rounded-full mr-2" id="connection-indicator"></span>
+      SBC UI
+    </h1>
+    
+    <!-- Tabs -->
+    <div class="flex border-b mb-3 flex-wrap">
+      <button id="tab-actions" class="tab-btn active px-3 py-1 text-sm font-medium rounded-t-lg">⚡ Actions</button>
+      <button id="tab-methods" class="tab-btn px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-t-lg">🔍 Methods</button>
+      <button id="tab-actionsfile" class="tab-btn px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-t-lg">📄 Actions File</button>
+      <button id="tab-automation" class="tab-btn px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-t-lg">🤖 Automation</button>
+      <button id="tab-spoof" class="tab-btn px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-t-lg">🎤 Spoof</button>
+      <button id="tab-executed" class="tab-btn px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-t-lg">📋 Executed</button>
+      <button id="tab-responses" class="tab-btn px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-t-lg">📨 Responses</button>
+      <button id="tab-info" class="tab-btn px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-t-lg">📊 Info</button>
+      <button id="tab-send" class="tab-btn px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-100 rounded-t-lg">📤 Custom</button>
+    </div>
+    
+    <!-- Actions Panel -->
+    <div id="panel-actions">
+      <div class="grid grid-cols-2 gap-3">
+        <div class="bg-gray-50 p-3 rounded">
+          <div class="font-medium mb-2">✋ Hand Raise</div>
+          <div class="flex space-x-2">
+            <button id="hand-raise-btn" class="action-btn bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded text-sm">Raise</button>
+            <button id="hand-lower-btn" class="action-btn bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm">Lower</button>
+          </div>
+        </div>
+        <div class="bg-gray-50 p-3 rounded">
+          <div class="font-medium mb-2">📱 Mobile Mode</div>
+          <div class="flex space-x-2">
+            <button id="mobile-on-btn" class="action-btn bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded text-sm">On</button>
+            <button id="mobile-off-btn" class="action-btn bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-sm">Off</button>
+          </div>
+        </div>
+        <div class="bg-gray-50 p-3 rounded">
+          <div class="font-medium mb-2">😴 Away</div>
+          <div class="flex space-x-2">
+            <button id="away-on-btn" class="action-btn bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-1 rounded text-sm">Set Away</button>
+            <button id="away-off-btn" class="action-btn bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded text-sm">Back</button>
+          </div>
+        </div>
+        <div class="bg-gray-50 p-3 rounded">
+          <div class="font-medium mb-2">😀 React to Last Msg</div>
+          <div class="flex flex-wrap gap-1">
+            <button data-emoji="👍" class="reaction-btn bg-purple-100 hover:bg-purple-200 px-2 py-1 rounded text-sm">👍</button>
+            <button data-emoji="❤️" class="reaction-btn bg-purple-100 hover:bg-purple-200 px-2 py-1 rounded text-sm">❤️</button>
+            <button data-emoji="😄" class="reaction-btn bg-purple-100 hover:bg-purple-200 px-2 py-1 rounded text-sm">😄</button>
+            <button data-emoji="🎉" class="reaction-btn bg-purple-100 hover:bg-purple-200 px-2 py-1 rounded text-sm">🎉</button>
+          </div>
+          <div class="text-xs text-gray-500 mt-1" id="last-msg-id-display">No message ID</div>
+        </div>
+      </div>
+      <div class="mt-4 text-xs text-gray-500"><span id="action-status"></span></div>
+    </div>
+    
+    <!-- Methods Panel -->
+    <div id="panel-methods" class="hidden">
+      <div class="mb-2 flex justify-between">
+        <h2 class="font-semibold">🔍 Discovered Methods</h2>
+        <button id="refresh-methods-btn" class="text-xs bg-gray-200 px-2 py-1 rounded">⟳ Refresh</button>
+      </div>
+      <div class="bg-gray-50 rounded border p-2 max-h-64 overflow-y-auto">
+        <div id="methods-list" class="text-xs space-y-1">Loading...</div>
+      </div>
+    </div>
+    
+    <!-- Actions File Panel -->
+    <div id="panel-actionsfile" class="hidden">
+      <div class="mb-2 flex justify-between">
+        <h2 class="font-semibold">📄 Mutations from actions.json</h2>
+        <input type="text" id="actions-filter" placeholder="Filter..." class="text-xs border rounded px-2 py-1">
+      </div>
+      <div class="bg-gray-50 rounded border p-2 max-h-64 overflow-y-auto">
+        <div id="actions-list" class="text-xs space-y-1">Loading...</div>
+      </div>
+    </div>
+    
+    <!-- Automation Panel -->
+    <div id="panel-automation" class="hidden">
+      <div class="mb-2 flex justify-between">
+        <h2 class="font-semibold">🤖 Automation Scripts</h2>
+        <div>
+          <button id="load-script-btn" class="text-xs bg-green-500 text-white px-3 py-1 rounded">📂 Load JSON</button>
+          <button id="clear-scripts-btn" class="text-xs bg-gray-300 px-3 py-1 rounded ml-1">Clear All</button>
+        </div>
+      </div>
+      <div id="automation-status" class="text-xs mb-2 text-gray-600"></div>
+      <div class="bg-gray-50 rounded border p-2 max-h-48 overflow-y-auto">
+        <div id="scripts-preview" class="text-xs space-y-1">
+          No script loaded.
+        </div>
+      </div>
+      
+      <!-- Log Box -->
+      <div class="mt-3">
+        <div class="flex justify-between items-center mb-1">
+          <h3 class="font-semibold text-sm">📋 Execution Log</h3>
+          <button id="clear-log-btn" class="text-xs bg-gray-200 px-2 py-1 rounded">Clear Log</button>
+        </div>
+        <div id="log-container" class="bg-gray-900 text-gray-200 rounded border p-2 h-40 overflow-y-auto font-mono text-xs">
+          <div class="text-gray-500">Logs will appear here...</div>
+        </div>
+      </div>
+      
+      <div class="mt-3 text-xs text-gray-500">
+        <p>JSON format: <code>{ "scripts": [ { "name": "...", "trigger": {...}, "action": {...}, "runMode": "once/forever" } ] }</code></p>
+      </div>
+    </div>
+
+    <!-- Spoof Panel -->
+    <div id="panel-spoof" class="hidden">
+      <div class="space-y-4">
+        <!-- Fake Audio Section -->
+        <div class="bg-gray-50 p-3 rounded">
+          <div class="flex justify-between items-center mb-2">
+            <span class="font-semibold">🎙️ Fake Microphone</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="fake-audio-toggle">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="mb-2">
+            <label class="block text-sm font-medium mb-1">Audio File (MP3/WAV/OGG)</label>
+            <input type="file" id="fake-audio-file" accept="audio/*" class="w-full text-xs">
+            <div id="audio-file-name" class="spoof-file-name"></div>
+          </div>
+          <div class="flex items-center gap-3">
+            <label class="flex items-center gap-1 text-xs">
+              <input type="checkbox" id="audio-loop" checked> Loop
+            </label>
+            <button id="test-audio-btn" class="text-xs bg-blue-100 px-2 py-1 rounded">🔊 Test Stream</button>
+          </div>
+        </div>
+
+        <!-- Fake Video Section -->
+        <div class="bg-gray-50 p-3 rounded">
+          <div class="flex justify-between items-center mb-2">
+            <span class="font-semibold">📷 Fake Camera</span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="fake-video-toggle">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="mb-2">
+            <label class="block text-sm font-medium mb-1">Video File (MP4/WebM) or Image (JPG/PNG)</label>
+            <input type="file" id="fake-video-file" accept="video/*,image/*" class="w-full text-xs">
+            <div id="video-file-name" class="spoof-file-name"></div>
+          </div>
+          <div class="flex items-center gap-3">
+            <label class="flex items-center gap-1 text-xs">
+              <input type="checkbox" id="video-loop" checked> Loop
+            </label>
+            <button id="test-video-btn" class="text-xs bg-blue-100 px-2 py-1 rounded">📹 Test Stream</button>
+          </div>
+        </div>
+
+        <div class="flex gap-2">
+          <button id="apply-spoof-btn" class="bg-purple-600 text-white px-4 py-2 rounded text-sm">✅ Apply to Page</button>
+          <button id="reset-spoof-btn" class="bg-gray-400 text-white px-4 py-2 rounded text-sm">🔄 Reset to Real Devices</button>
+        </div>
+        <div id="spoof-status" class="text-xs text-gray-600"></div>
+        <div class="text-xs text-gray-500 mt-2">
+          <p>⚠️ Note: After applying, refresh the BBB page or re-join the meeting to see fake devices in media settings.</p>
+          <p>Fake devices will appear as "SBC Fake Microphone" and "SBC Fake Camera".</p>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Executed Panel -->
+    <div id="panel-executed" class="hidden">
+      <div class="mb-2 flex justify-between">
+        <h2 class="font-semibold">📋 Executed Operations</h2>
+        <button id="clear-executed-btn" class="text-xs bg-gray-200 px-2 py-1 rounded">Clear</button>
+      </div>
+      <div class="bg-gray-50 rounded border p-2 max-h-64 overflow-y-auto">
+        <div id="executed-list" class="text-xs space-y-1">Loading...</div>
+      </div>
+    </div>
+    
+    <!-- Responses Panel -->
+    <div id="panel-responses" class="hidden">
+      <div class="mb-2 flex justify-between">
+        <h2 class="font-semibold">📨 Operation Responses</h2>
+        <button id="clear-responses-btn" class="text-xs bg-gray-200 px-2 py-1 rounded">Clear</button>
+      </div>
+      <div class="bg-gray-50 rounded border p-2 max-h-64 overflow-y-auto">
+        <div id="responses-list" class="text-xs space-y-1">Loading...</div>
+      </div>
+    </div>
+    
+    <!-- Info Panel -->
+    <div id="panel-info" class="hidden">
+      <div class="bg-blue-50 rounded-lg p-3 mb-4">
+        <div class="flex justify-between">
+          <h2 class="font-semibold">👤 Your Info</h2>
+          <button id="refresh-btn" class="text-xs bg-blue-500 text-white px-2 py-1 rounded">⟳</button>
+        </div>
+        <div class="mt-2 text-sm">
+          <div>Name: <span id="user-name">-</span></div>
+          <div>User ID: <span id="user-id" class="font-mono text-xs">-</span></div>
+          <div>Role: <span id="user-role">-</span></div>
+          <div>WS: <span id="ws-state">-</span></div>
+        </div>
+      </div>
+      <div>
+        <h2 class="font-semibold mb-2">📨 Recent Messages</h2>
+        <div class="bg-gray-50 rounded border max-h-48 overflow-y-auto p-2">
+          <div id="message-list" class="text-xs">Loading...</div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Custom Send Panel -->
+    <div id="panel-send" class="hidden">
+      <div class="mb-2 flex justify-between">
+        <h2 class="font-semibold">📤 Custom Operation</h2>
+        <div>
+          <button id="load-example-btn" class="text-xs bg-gray-200 px-2 py-1 rounded mr-1">Example</button>
+          <button id="format-json-btn" class="text-xs bg-gray-200 px-2 py-1 rounded">Format</button>
+        </div>
+      </div>
+      <textarea id="mutation-input" rows="6" class="w-full p-2 border rounded font-mono text-xs bg-gray-50" placeholder='{"type":"subscribe",...}'></textarea>
+      <div class="mt-2">
+        <div class="flex justify-between items-center">
+          <label class="text-xs font-semibold">Variables Editor</label>
+          <button id="update-vars-from-json" class="text-xs text-blue-600">↻ Sync from JSON</button>
+        </div>
+        <div id="variables-editor" class="bg-gray-50 rounded border p-2 mt-1 max-h-40 overflow-y-auto"></div>
+      </div>
+      <button id="send-mutation-btn" class="mt-3 bg-purple-600 text-white px-4 py-2 rounded text-sm">Send Operation</button>
+      <div id="send-status" class="mt-2 text-xs"></div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Small Blue Client - SBC (BBB Automation Client)",
+  "version": "5.0.1",
+  "description": "A Chrome extension to Fully automate actions on BigBlueButton with no hassle.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["*://*/*"],
+  "icons": {
+    "700": "icon700.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js", "actions.json"],
+      "matches": ["*://*/*"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SBC"
+  }
+}
