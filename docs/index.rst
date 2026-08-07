@@ -9,9 +9,10 @@ SmallBlueClient
 SmallBlueClient (SBC) is a community Python automation toolkit for authenticated
 BigBlueButton sessions exported by the SBC Chrome extension.
 
-**Python-first release:** this repository currently publishes the Python
-library, examples, tests, schema tools, and documentation. The browser extension
-is being revised separately and is intentionally not included in this release.
+**Python-first release:** this repository publishes the Python library, examples,
+tests, schema tools, documentation, and a deliberately minimal Chrome session
+extractor. The extension only exports authenticated ``.sbc`` sessions; all BBB
+automation is implemented by the Python package.
 
 `View SmallBlueClient on GitHub <https://github.com/BolinoIR/SmallBlueClient>`_.
 Documentation is published at `sbc.protobuf.lol <https://sbc.protobuf.lol>`_.
