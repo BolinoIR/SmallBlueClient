@@ -20,16 +20,16 @@ examples/test.mp3
 bigbluebutton-*/
 
 # Archived legacy Chrome-extension automation code stays local.
-actions.json
-background.js
-content.js
-detector.js unused
-inject.js
-manifest.json
-popup.html
-popup.js
-session/
-Scripts/
-tw.js
-Version-*/
+/actions.json
+/background.js
+/content.js
+/detector.js unused
+/inject.js
+/manifest.json
+/popup.html
+/popup.js
+/session/
+/Scripts/
+/tw.js
+/Version-*/
 archive/

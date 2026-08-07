@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SBC Session Extractor</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { width: 320px; margin: 0; padding: 18px; background: Canvas; color: CanvasText; }
+      h1 { font-size: 18px; margin: 0 0 8px; } p { line-height: 1.45; font-size: 13px; }
+      #status { padding: 10px; border-radius: 8px; background: color-mix(in srgb, CanvasText 8%, Canvas); }
+      button { width: 100%; padding: 10px; border: 0; border-radius: 8px; margin-top: 12px; font-weight: 700; cursor: pointer; }
+      button:not(:disabled) { background: #2563eb; color: white; } button:disabled { opacity: .55; cursor: not-allowed; }
+      .muted { color: GrayText; } code { font-size: 11px; word-break: break-all; }
+    </style>
+  </head>
+  <body>
+    <h1>SBC Session Extractor</h1>
+    <p class="muted">Passive BBB GraphQL session capture for the Python library. No BBB actions are available here.</p>
+    <div id="status">Checking the active tab…</div>
+    <button id="export" disabled>Export .sbc session</button>
+    <script src="popup.js"></script>
+  </body>
+</html>
