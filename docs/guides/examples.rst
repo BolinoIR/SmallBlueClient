@@ -60,3 +60,16 @@ Async bot
 
 Use the repository's ``examples/`` directory for ready-to-run files covering
 media, typed controllers, schema events, moderation, and event patterns.
+
+Capability diagnostic
+---------------------
+
+``library_diagnostic.py`` checks every high-level read controller, opens the
+built-in event streams, and validates all embedded BBB action definitions. It
+writes a JSON report that separates working operations, permission/deployment
+failures, and scenario-dependent operations. It never ends the meeting.
+
+.. code-block:: bash
+
+   python examples/library_diagnostic.py examples/teacher.sbc
+   python examples/library_diagnostic.py examples/teacher.sbc --writes --send-chat

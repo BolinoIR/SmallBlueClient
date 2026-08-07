@@ -16,6 +16,8 @@ docs/_build/
 # Exported authenticated sessions and local media fixtures
 *.sbc
 examples/test.mp3
+sbc-diagnostic-report*.json
+.sbc-diagnostic-*.json
 
 # BBB source checkouts are release-build inputs, never project source.
 bigbluebutton-*/
