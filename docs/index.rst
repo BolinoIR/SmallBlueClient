@@ -17,12 +17,32 @@ automation is implemented by the Python package.
 `View SmallBlueClient on GitHub <https://github.com/BolinoIR/SmallBlueClient>`_.
 Documentation is published at `sbc.protobuf.lol <https://sbc.protobuf.lol>`_.
 
+Examples
+--------
+
+Install the stable release:
+
+.. code-block:: bash
+
+   pip install SmallBlueClient
+
+Build a small bot with the synchronous API:
+
 .. code-block:: python
 
    import sbc
 
    with sbc.client("teacher.sbc") as client:
        client.chat.send("Hello from SBC")
+
+.. toctree::
+   :maxdepth: 2
+   :caption: API Documents
+
+   reference/api
+   reference/actions
+   reference/schema
+   API
 
 .. toctree::
    :maxdepth: 2
@@ -39,9 +59,15 @@ Documentation is published at `sbc.protobuf.lol <https://sbc.protobuf.lol>`_.
 
 .. toctree::
    :maxdepth: 2
-   :caption: Reference
+   :caption: Examples
 
-   reference/api
-   reference/actions
-   reference/schema
-   API
+   guides/examples
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Project Links
+
+   GitHub repository <https://github.com/BolinoIR/SmallBlueClient>
+   PyPI package <https://pypi.org/project/smallblueclient/>
+   Documentation website <https://sbc.protobuf.lol/>
+   Full changelog <https://github.com/BolinoIR/SmallBlueClient/blob/main/CHANGELOG.md>

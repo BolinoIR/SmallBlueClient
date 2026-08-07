@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/SmallBlueClient/"><img src="https://img.shields.io/pypi/v/SmallBlueClient?logo=pypi&logoColor=white&label=PyPI" alt="PyPI"></a>
+  <a href="https://pypi.org/project/smallblueclient/"><img src="https://img.shields.io/pypi/v/smallblueclient.svg?logo=pypi&logoColor=white&label=PyPI&cacheSeconds=300" alt="PyPI version 0.1.0"></a>
   <a href="https://sbc.protobuf.lol"><img src="https://img.shields.io/badge/docs-sbc.protobuf.lol-2563eb?logo=readthedocs&logoColor=white" alt="Documentation"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-16a34a" alt="MIT License"></a>
   <a href="https://github.com/BolinoIR/SmallBlueClient"><img src="https://img.shields.io/github/stars/BolinoIR/SmallBlueClient?style=flat&logo=github" alt="GitHub stars"></a>
