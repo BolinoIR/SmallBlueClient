@@ -43,6 +43,16 @@ def load_registry() -> dict[str, Mutation]:
     """Return every BBB action compiled into this module."""
     try:
         mutations = json.loads(ACTION_DEFINITIONS_JSON)["mutations"]
+        # BBB 3.0.32's generated actions.graphql omits the fields of
+        # ``chatSetLastSeen``. The HTML5 client and action adapter are the
+        # authoritative runtime contract: both ``chatId`` and ``lastSeenAt``
+        # are required to build SetGroupChatLastSeenReqMsg.
+        for item in mutations:
+            if item["name"] == "chatSetLastSeen":
+                item["arguments"] = [
+                    {"name": "chatId", "type": "String", "required": True, "isList": False},
+                    {"name": "lastSeenAt", "type": "String", "required": True, "isList": False},
+                ]
         return {
             item["name"]: Mutation(item["name"], tuple(
                 Argument(arg["name"], arg["type"], bool(arg.get("required")), bool(arg.get("isList")))

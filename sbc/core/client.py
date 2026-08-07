@@ -6,6 +6,7 @@ import time
 import re
 import uuid
 import mimetypes
+from datetime import datetime, timezone
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,16 @@ class ChatController:
         if isinstance(message, ChatMessage):
             return self.send(text, chat_id=chat_id or message.chat_id, reply_to=message.id)
         return self.send(text, chat_id=chat_id, reply_to=message)
+
+    def mark_read(self, *, chat_id: str | None = None, at: str | None = None) -> dict[str, Any]:
+        """Set the BBB read cursor for a public or private chat.
+
+        The timestamp defaults to the current UTC time and uses BBB HTML5's
+        ``chatSetLastSeen(chatId, lastSeenAt)`` runtime contract.
+        """
+        chat_id = chat_id or self._client.session.snapshot.get("public_chat_id") or public_chat_id()
+        at = at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return self._client.actions.chatSetLastSeen(chatId=chat_id, lastSeenAt=at)
 
     def public_history(self, *, limit: int = 100, offset: int = 0) -> list[ChatMessage]:
         data = self._client.graphql.execute(CHAT_MESSAGES, {"limit": limit, "offset": offset})

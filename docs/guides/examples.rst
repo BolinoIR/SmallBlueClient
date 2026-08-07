@@ -66,10 +66,37 @@ Capability diagnostic
 
 ``library_diagnostic.py`` checks every high-level read controller, opens the
 built-in event streams, and validates all embedded BBB action definitions. It
-writes a JSON report that separates working operations, permission/deployment
-failures, and scenario-dependent operations. It never ends the meeting.
+writes a detailed JSON report containing safe controller payloads, stream
+observations, controller signatures, every action's required variables, local
+GraphQL document, and a clear pass/fail/skip classification. It never ends the
+meeting.
 
 .. code-block:: bash
 
    python examples/library_diagnostic.py examples/teacher.sbc
    python examples/library_diagnostic.py examples/teacher.sbc --writes --send-chat
+   python examples/library_diagnostic.py examples/teacher.sbc --event-seconds 20 --full-details
+
+The optional write probe only performs reversible saved-user actions: mark the
+chat read, typing, away on/off, and an activity sign. It sends no chat message
+unless ``--send-chat`` is included.
+
+Full server-side action plan
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+BBB actions such as breakout creation, moderation, polls, notes, recordings,
+or presentation changes require real IDs and meeting-specific payloads. SBC
+therefore does not invent values or fire them automatically. Generate a plan
+containing all 109 mutations, replace the placeholders, and set only the cases
+you want to test to ``true``:
+
+.. code-block:: bash
+
+   python examples/library_diagnostic.py --list-actions
+   python examples/library_diagnostic.py --generate-action-plan sbc-action-plan.json
+   python examples/library_diagnostic.py examples/teacher.sbc --action-plan sbc-action-plan.json --execute-plan --report full-report.json
+
+Every plan entry is disabled by default. The diagnostic refuses to execute a
+plan without ``--execute-plan`` and permanently excludes ``meetingEnd``. This
+makes the generated report useful for deployment compatibility testing without
+silently altering a live meeting.

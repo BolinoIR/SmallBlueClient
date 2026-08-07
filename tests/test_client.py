@@ -70,6 +70,19 @@ class ClientTests(unittest.TestCase):
             "replyToMessageId": "message-1",
         })
 
+    def test_chat_mark_read_uses_bbb_runtime_action_fields(self):
+        client = SBCClient(SBCSession(server="https://bbb.example", websocket_url="wss://bbb.example/graphql"), connect=False)
+        transport = Transport()
+        client.graphql.transport = transport
+
+        client.chat.mark_read(chat_id="private-chat-1", at="2026-08-07T00:00:00Z")
+
+        self.assertIn("chatSetLastSeen", transport.last_query)
+        self.assertEqual(transport.last_variables, {
+            "chatId": "private-chat-1",
+            "lastSeenAt": "2026-08-07T00:00:00Z",
+        })
+
     def test_user_subscription_uses_real_bbb_presenter_field(self):
         self.assertIn("presenter", USERS)
         self.assertNotIn("isPresenter", USERS)

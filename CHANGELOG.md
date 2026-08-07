@@ -1,5 +1,23 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.1.4 — Full capability diagnostics and BBB chat read state
+
+- Corrected the embedded ``chatSetLastSeen`` definition to the BBB HTML5 and
+  GraphQL Actions runtime contract: ``chatId`` and ``lastSeenAt`` are both
+  required.
+- Added ``client.chat.mark_read()`` for public and private chat read cursors.
+- Rebuilt ``examples/library_diagnostic.py`` into a detailed, safe capability
+  test suite: all read controllers, event streams, mutation compilation,
+  reversible self-write probes, JSON-safe full reports, and action inventory.
+- Added a review-first all-action test-plan workflow. It creates disabled
+  entries for all 109 mutations and executes only explicitly enabled actions;
+  ``meetingEnd`` is permanently excluded.
+- Added ``--list-actions``, ``--generate-action-plan``, ``--action-plan``,
+  ``--execute-plan``, ``--full-details``, and ``--no-auto-join`` diagnostic
+  commands.
+- Directly running the diagnostic from ``examples/`` now always tests the
+  checkout rather than accidentally importing an older globally-installed SBC.
+
 ## 0.1.3 — Live chat events and threaded replies
 
 - The initial public-chat history result is now a baseline, so
