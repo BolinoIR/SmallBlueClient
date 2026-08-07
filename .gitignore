@@ -5,6 +5,7 @@ __pycache__/
 build/
 dist/
 .wheel-test/
+.wheel-test-pypi/
 .pytest_cache/
 .mypy_cache/
 .coverage
