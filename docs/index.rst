@@ -57,6 +57,7 @@ Build a small bot with the synchronous API:
    guides/reliability
    guides/cli
    guides/bots
+   guides/community
    guides/compatibility
    guides/python-only-release
 

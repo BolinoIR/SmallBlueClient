@@ -9,6 +9,9 @@ from typing import Any, Callable
 
 from ..core.client import SBCClient
 from ..types import Event, StringEnum
+from .transport import AsyncGraphQLClient, AsyncGraphQLTransport
+
+__all__ = ["AsyncSBCClient", "AsyncEventStream", "AsyncEvents", "AsyncGraphQLClient", "AsyncGraphQLTransport"]
 
 
 class AsyncEventStream(AsyncIterator[Any]):
@@ -93,7 +96,13 @@ class _AsyncProxy:
 
 
 class AsyncSBCClient:
-    """Async context-manager and controller facade around :class:`SBCClient`."""
+    """Async context manager with native GraphQL and compatible controllers.
+
+    ``graphql`` is an actual asyncio WebSocket transport for custom queries,
+    mutations, and subscriptions. Existing high-level controllers retain SBC's
+    source-derived compatibility mappings and are safely bridged while their
+    BBB controller operations are progressively made native.
+    """
 
     def __init__(self, session_file: str | Path, *, auto_join: bool = True,
                  listen_only: bool = True) -> None:
@@ -103,6 +112,8 @@ class AsyncSBCClient:
         # Expose the same read-only session metadata as SBCClient. This makes
         # self-filtering straightforward in async event loops.
         self.session = self._sync.session
+        self.transport = AsyncGraphQLTransport(self.session)
+        self.graphql = AsyncGraphQLClient(self.transport)
         self.events = AsyncEvents(self)
         self._event_thread: threading.Thread | None = None
         self._event_thread_lock = threading.Lock()
@@ -132,12 +143,16 @@ class AsyncSBCClient:
 
     async def __aenter__(self) -> "AsyncSBCClient":
         await asyncio.to_thread(self._sync.connect)
+        # Native GraphQL is deliberately lazy. Most bots use high-level
+        # controllers and should not open a second authenticated socket until
+        # they explicitly call ``query`` or ``subscribe``.
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
         await self.aclose()
 
     async def aclose(self) -> None:
+        await self.transport.close()
         await asyncio.to_thread(self._sync.close)
         thread = self._event_thread
         if thread is not None:
@@ -145,6 +160,15 @@ class AsyncSBCClient:
 
     async def mutation(self, name: str, /, **variables: Any) -> dict[str, Any]:
         return await asyncio.to_thread(self._sync.mutation, name, **variables)
+
+    async def query(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Run a raw GraphQL query through the native asyncio transport."""
+        return await self.graphql.execute(query, variables)
+
+    async def subscribe(self, query: str, variables: dict[str, Any] | None = None) -> AsyncIterator[dict[str, Any]]:
+        """Yield a raw native asyncio GraphQL subscription."""
+        async for item in self.graphql.subscribe(query, variables):
+            yield item
 
     async def watch_table(self, *args: Any, **kwargs: Any) -> str:
         return await asyncio.to_thread(self._sync.watch_table, *args, **kwargs)

@@ -1,0 +1,17 @@
+name: Feature proposal
+description: Propose a controller, event, bot helper, or compatibility feature.
+title: "[feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      placeholder: "client.feature.do_thing(...)"
+    validations:
+      required: true
+  - type: textarea
+    id: bbb
+    attributes:
+      label: BBB source or observed behavior
+      description: Link the corresponding source/schema behavior if known.

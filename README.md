@@ -52,6 +52,19 @@ Read the complete guides and generated API reference at
 
 See the full migration history in [CHANGELOG.md](CHANGELOG.md).
 
+### Development and community
+
+```bash
+python -m pip install -e ".[docs,dev]"
+python -m unittest discover -s tests -q
+ruff check sbc tests
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor workflow,
+[SECURITY.md](SECURITY.md) for credential-safe reporting, and the hosted
+[community guide](https://sbc.protobuf.lol/guides/community.html) for sharing
+BBB compatibility results.
+
 ## Quick start
 
 1. Load the [`extension/`](extension/README.md) directory through

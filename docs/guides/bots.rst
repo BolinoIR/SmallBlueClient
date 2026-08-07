@@ -24,3 +24,20 @@ periodic tasks, and small persistent state out of application code.
 The command layer filters the saved SBC identity so bots do not reply to
 their own messages. ``BotState`` is a human-readable JSON file saved after
 each change and when the bot closes.
+
+Native async GraphQL
+--------------------
+
+``AsyncSBCClient.graphql`` and ``AsyncSBCClient.subscribe`` use an asyncio
+WebSocket transport directly. This is useful for deployment-specific schema
+queries while the typed controller API remains identical to synchronous SBC.
+
+.. code-block:: python
+
+   async with sbc.async_client("teacher.sbc") as client:
+       data = await client.query("query { meeting { name } }")
+       print(data)
+
+       async for event in client.subscribe("subscription { meeting { ended } }"):
+           if event["meeting"][0]["ended"]:
+               break

@@ -1,5 +1,15 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.2.1 — Native async transport and community tooling
+
+- Added ``AsyncGraphQLTransport`` and ``AsyncGraphQLClient`` for raw native
+  asyncio GraphQL queries, mutations, and reconnecting subscriptions.
+- Added async client ``query()`` and ``subscribe()`` convenience APIs while
+  preserving the established high-level async controller surface.
+- Added Ruff, mypy, pre-commit, CI linting, contributor instructions, issue
+  forms, credential-safe security policy, and community conduct rules.
+- Added community compatibility-report guidance and async transport docs.
+
 ## 0.2.0 — Reliability, CLI, media controls, and bot framework
 
 - Added the ``sbc validate``, ``sbc inspect``, ``sbc diagnose``,

@@ -1,0 +1,33 @@
+name: BBB compatibility or library bug
+description: Report a reproducible SmallBlueClient issue without credentials.
+title: "[bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Never attach an .sbc file, cookie, token, meeting ID, recording, or private chat data."
+  - type: input
+    id: version
+    attributes:
+      label: SBC and BBB version
+      placeholder: "SBC 0.2.1, BBB 3.0.x"
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Media backend
+      options: [bbb-webrtc-sfu, LiveKit, unknown, not applicable]
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Include sanitized code and exact error/log lines.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
