@@ -19,6 +19,26 @@
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const notify = () => window.postMessage({ type: "SBC_PAGE_CAPTURE_UPDATED", capture: session() }, "*");
 
+  // BBB stores the authenticated meeting name in session storage during the
+  // join flow (see join-handler/presenceManager/service.ts). Read it only as
+  // a fallback; the visible BBB title is normally the most useful exported
+  // meeting label.
+  const storedMeetingName = () => {
+    try {
+      const value = sessionStorage.getItem("meetingName");
+      return typeof value === "string" && value.trim() ? value.trim() : null;
+    } catch (_) {
+      return null;
+    }
+  };
+
+  const pageMeetingName = () => {
+    const title = String(document.title || "").trim();
+    // Do not export the generic application title as a meeting name.
+    if (title && !/^BigBlueButton\s*$/i.test(title)) return title;
+    return storedMeetingName();
+  };
+
   /**
    * Read the exact public client settings used by BBB's HTML5 client for its
    * bbb-webrtc-sfu bridge. These names mirror the BBB source:
@@ -75,7 +95,7 @@
       server: location.origin,
       websocket_url: state.websocketUrl,
       meeting_id: state.meeting.id || null,
-      meeting_name: state.meeting.name || document.title || null,
+      meeting_name: state.meeting.name || pageMeetingName() || null,
       user_id: state.currentUser.id || null,
       user_name: state.currentUser.name || null,
       role: state.currentUser.role || null,
@@ -105,7 +125,17 @@
     if (typeof value.userId === "string") {
       state.currentUser = { ...state.currentUser, id: value.userId, name: value.name || state.currentUser.name, role: value.role || state.currentUser.role, authToken: value.authToken || state.currentUser.authToken, joined: value.joined, currentlyInMeeting: value.currentlyInMeeting, loggedOut: value.loggedOut, ejected: value.ejected, joinErrorCode: value.joinErrorCode, joinErrorMessage: value.joinErrorMessage };
     }
-    if (typeof value.meetingId === "string") state.meeting = { id: value.meetingId, name: value.name || value.meetingName || state.meeting.name };
+    if (typeof value.meetingId === "string") {
+      // `user` rows contain both `meetingId` and `name`; the latter is the
+      // participant/bot name, *not* the meeting title. Only accept BBB's
+      // explicitly named `meetingName` property here.
+      state.meeting = {
+        id: value.meetingId,
+        name: typeof value.meetingName === "string" && value.meetingName.trim()
+          ? value.meetingName.trim()
+          : state.meeting.name,
+      };
+    }
     if (typeof value.livekitToken === "string") state.livekit = { token: value.livekitToken, url: value.livekitUrl || `wss://${location.host}/livekit` };
     Object.values(value).forEach((child) => visit(child, seen));
   }
