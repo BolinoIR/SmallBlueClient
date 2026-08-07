@@ -36,6 +36,24 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(transport.last_variables, {"userId": "u1", "muted": True})
         self.assertEqual(completed[0][0], {"userId": "u1", "muted": True})
 
+    def test_chat_uses_bbb_public_chat_group_not_meeting_id(self):
+        client = SBCClient(SBCSession(
+            server="https://bbb.example",
+            websocket_url="wss://bbb.example/graphql",
+            meeting_id="a-real-bbb-meeting-id",
+        ), connect=False)
+        transport = Transport()
+        client.graphql.transport = transport
+
+        client.chat.send("Hello from SBC")
+
+        self.assertIn("chatSendMessage", transport.last_query)
+        self.assertEqual(transport.last_variables, {
+            "chatId": "MAIN-PUBLIC-GROUP-CHAT",
+            "chatMessageInMarkdownFormat": "Hello from SBC",
+            "replyToMessageId": None,
+        })
+
     def test_user_subscription_uses_real_bbb_presenter_field(self):
         self.assertIn("presenter", USERS)
         self.assertNotIn("isPresenter", USERS)
