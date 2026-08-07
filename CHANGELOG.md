@@ -1,5 +1,12 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.1.2 — Correct live user-join events
+
+- The first BBB ``user`` subscription result is now stored as the existing
+  participant baseline rather than being emitted as a sequence of joins.
+- ``user_joined`` and ``bot.events.user_joined()`` now fire only when a new
+  user appears after SBC has started watching the meeting.
+
 ## 0.1.1 — Public-chat delivery fix
 
 - Fixed ``client.chat.send()`` and ``await client.chat.send()`` using a BBB

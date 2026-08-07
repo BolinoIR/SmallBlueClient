@@ -82,6 +82,27 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             client.watch("query { meeting { name } }", lambda _: None)
 
+    def test_user_joined_ignores_initial_subscription_snapshot(self):
+        client = SBCClient(SBCSession(server="https://bbb.example", websocket_url="wss://bbb.example/graphql"), connect=False)
+        joined = []
+        client.on("user_joined", joined.append)
+
+        # The first subscription result contains everybody who was already in
+        # the meeting, including the SBC identity. It is a baseline, not a
+        # sequence of joins.
+        client._watch_users({"user": [
+            {"userId": "bot", "name": "SBC bot"},
+            {"userId": "already-here", "name": "Ada"},
+        ]})
+        self.assertEqual(joined, [])
+
+        client._watch_users({"user": [
+            {"userId": "bot", "name": "SBC bot"},
+            {"userId": "already-here", "name": "Ada"},
+            {"userId": "new-user", "name": "Grace"},
+        ]})
+        self.assertEqual([(user.id, user.name) for user in joined], [("new-user", "Grace")])
+
     def test_event_streams_are_opt_in_and_grouped_by_handler(self):
         client = SBCClient(SBCSession(server="https://bbb.example", websocket_url="wss://bbb.example/graphql"), connect=False)
         client.on("user_talking", lambda _: None)

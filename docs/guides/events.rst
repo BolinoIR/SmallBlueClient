@@ -12,6 +12,8 @@ Events and lifecycle streams
        print(user.name)
 
 Built-in events reconnect automatically and use one multiplexed GraphQL socket.
+The initial BBB user-table result is treated as a baseline; ``user_joined`` is
+emitted only for participants who appear after the bot begins watching.
 Breakout lifecycle events are ``breakout_created``, ``breakout_started``,
 ``breakout_updated``, and ``breakout_ended``.
 

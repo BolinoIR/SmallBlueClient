@@ -658,7 +658,17 @@ class SBCClient(EventEmitter):
 
     def _watch_users(self, data: dict[str, Any]) -> None:
         current = {u.id: u for u in (User.from_graphql(row) for row in data.get("user", []))}
-        previous = getattr(self, "_event_users", {})
+        previous = getattr(self, "_event_users", None)
+
+        # A GraphQL subscription's first result is the current table snapshot,
+        # not a stream of historical joins. Treat it as the baseline so a bot
+        # does not welcome itself or every participant already in the room.
+        # Subsequent snapshots are diffed and only genuinely new IDs emit
+        # ``user_joined``.
+        if previous is None:
+            self._event_users = current
+            return
+
         for user_id, user in current.items():
             old = previous.get(user_id)
             if old is None:
