@@ -1,5 +1,14 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.1.3 — Live chat events and threaded replies
+
+- The initial public-chat history result is now a baseline, so
+  ``chat_message`` is emitted only for messages received after watching starts.
+- Added ``client.chat.reply(message, text)`` and async equivalent for BBB
+  threaded replies.
+- Added ``bot.session`` to the async client for session metadata and clean
+  self-filtering in async bots.
+
 ## 0.1.2 — Correct live user-join events
 
 - The first BBB ``user`` subscription result is now stored as the existing

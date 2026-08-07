@@ -54,6 +54,22 @@ class ClientTests(unittest.TestCase):
             "replyToMessageId": None,
         })
 
+    def test_chat_reply_uses_the_original_message_and_chat(self):
+        client = SBCClient(SBCSession(server="https://bbb.example", websocket_url="wss://bbb.example/graphql"), connect=False)
+        transport = Transport()
+        client.graphql.transport = transport
+        message = __import__("sbc").ChatMessage(
+            id="message-1", text="Question", sender_name="Ada", chat_id="private-chat-1",
+        )
+
+        client.chat.reply(message, "Answer")
+
+        self.assertEqual(transport.last_variables, {
+            "chatId": "private-chat-1",
+            "chatMessageInMarkdownFormat": "Answer",
+            "replyToMessageId": "message-1",
+        })
+
     def test_user_subscription_uses_real_bbb_presenter_field(self):
         self.assertIn("presenter", USERS)
         self.assertNotIn("isPresenter", USERS)
@@ -102,6 +118,18 @@ class ClientTests(unittest.TestCase):
             {"userId": "new-user", "name": "Grace"},
         ]})
         self.assertEqual([(user.id, user.name) for user in joined], [("new-user", "Grace")])
+
+    def test_chat_message_ignores_initial_history(self):
+        client = SBCClient(SBCSession(server="https://bbb.example", websocket_url="wss://bbb.example/graphql"), connect=False)
+        received = []
+        client.on("chat_message", received.append)
+        historical = {"messageId": "old", "chatId": "MAIN-PUBLIC-GROUP-CHAT", "message": "Before the bot", "senderName": "Ada"}
+        fresh = {"messageId": "new", "chatId": "MAIN-PUBLIC-GROUP-CHAT", "message": "After the bot", "senderName": "Grace"}
+
+        client._watch_chat({"chat_message_public": [historical]})
+        self.assertEqual(received, [])
+        client._watch_chat({"chat_message_public": [historical, fresh]})
+        self.assertEqual([(message.id, message.text) for message in received], [("new", "After the bot")])
 
     def test_event_streams_are_opt_in_and_grouped_by_handler(self):
         client = SBCClient(SBCSession(server="https://bbb.example", websocket_url="wss://bbb.example/graphql"), connect=False)

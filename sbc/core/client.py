@@ -56,6 +56,17 @@ class ChatController:
         chat_id = chat_id or self._client.session.snapshot.get("public_chat_id") or public_chat_id(self._client.session.meeting_id)
         return self._client.actions.chatSendMessage(chatId=chat_id, chatMessageInMarkdownFormat=text, replyToMessageId=reply_to)
 
+    def reply(self, message: ChatMessage | str, text: str, *, chat_id: str | None = None) -> dict[str, Any]:
+        """Send ``text`` as a BBB threaded reply to a chat message.
+
+        Pass a :class:`~sbc.models.ChatMessage` received from the
+        ``chat_message`` event to preserve its public/private chat id, or pass
+        a message id directly with an optional ``chat_id``.
+        """
+        if isinstance(message, ChatMessage):
+            return self.send(text, chat_id=chat_id or message.chat_id, reply_to=message.id)
+        return self.send(text, chat_id=chat_id, reply_to=message)
+
     def public_history(self, *, limit: int = 100, offset: int = 0) -> list[ChatMessage]:
         data = self._client.graphql.execute(CHAT_MESSAGES, {"limit": limit, "offset": offset})
         return [ChatMessage.from_graphql(row) for row in data.get("chat_message_public", [])]
@@ -837,7 +848,13 @@ class SBCClient(EventEmitter):
 
     def _watch_chat(self, data: dict[str, Any]) -> None:
         messages = [ChatMessage.from_graphql(row) for row in data.get("chat_message_public", [])]
-        seen = getattr(self, "_seen_messages", set())
+        seen = getattr(self, "_seen_messages", None)
+        # The initial public-chat query contains history. Mark it seen instead
+        # of emitting it as newly received messages; callers can explicitly
+        # use ``chat.public_history()`` when they want the backlog.
+        if seen is None:
+            self._seen_messages = {message.id for message in messages}
+            return
         for message in messages:
             if message.id not in seen: self.emit("chat_message", message)
         self._seen_messages = seen | {message.id for message in messages}

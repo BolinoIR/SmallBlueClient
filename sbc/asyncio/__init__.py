@@ -100,6 +100,9 @@ class AsyncSBCClient:
         self._sync = SBCClient.from_file(
             session_file, connect=False, auto_join=auto_join, listen_only=listen_only,
         )
+        # Expose the same read-only session metadata as SBCClient. This makes
+        # self-filtering straightforward in async event loops.
+        self.session = self._sync.session
         self.events = AsyncEvents(self)
         self._event_thread: threading.Thread | None = None
         self._event_thread_lock = threading.Lock()
