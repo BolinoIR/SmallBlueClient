@@ -1,0 +1,37 @@
+# Python release artifacts and local development state
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.wheel-test/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+docs/_build/
+.vscode/
+
+# Exported authenticated sessions and local media fixtures
+*.sbc
+examples/test.mp3
+
+# BBB source checkouts are release-build inputs, never project source.
+bigbluebutton-*/
+
+# Browser extension work is intentionally private until it is complete.
+actions.json
+background.js
+content.js
+detector.js unused
+inject.js
+manifest.json
+popup.html
+popup.js
+session/
+Scripts/
+tw.js
+Version-*/
+.github/
+archive/
+extension/
