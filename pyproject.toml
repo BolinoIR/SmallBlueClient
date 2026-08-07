@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "SmallBlueClient"
-version = "0.1.5"
+version = "0.2.0"
 description = "Community BigBlueButton automation client"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,6 +18,9 @@ docs = ["sphinx>=8,<9", "furo>=2024.8.6", "myst-parser>=4,<5", "linkify-it-py>=2
 [project.urls]
 Homepage = "https://github.com/BolinoIR/SmallBlueClient/"
 Documentation = "https://sbc.protobuf.lol"
+
+[project.scripts]
+sbc = "sbc.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["sbc*"]

@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+/release/
 .wheel-test/
 .wheel-test-pypi/
 .pytest_cache/

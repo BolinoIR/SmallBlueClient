@@ -54,6 +54,9 @@ Build a small bot with the synchronous API:
    guides/controllers
    guides/events
    guides/media
+   guides/reliability
+   guides/cli
+   guides/bots
    guides/compatibility
    guides/python-only-release
 

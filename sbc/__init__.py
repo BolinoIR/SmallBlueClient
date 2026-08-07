@@ -5,7 +5,9 @@ from .core.client import SBCClient
 from .asyncio import AsyncSBCClient
 from .core.session import SBCSession, SessionHealth
 from .bridge import SessionBridge
-from .media import MediaConnectionError
+from .media import AudioPlaylist, MediaConnectionError, MediaHealth
+from .reliability import EnduranceMonitor, ReliabilityReport, ReliabilitySample
+from .bots import Bot, BotState, CommandContext, Rule
 from .core.logging import enable_logging
 from .core.events import EVENTS
 from .types import (BreakoutLifecycle, CaptionProvider, Event, GuestApproval, GuestPolicy,
@@ -17,9 +19,9 @@ from .models import (BreakoutRoom, Camera, Caption, Chat, ChatMessage, ExternalV
                      Timer, User, WhiteboardAnnotation, WhiteboardCursor,
                      PresentationDocument)
 from .schema import BBBTable, SchemaCatalog, catalogs, schema
-from .core.exceptions import SBCError, SessionError, ConnectionError, GraphQLError, PermissionDenied, MutationNotFound, MutationValidationError
+from .core.exceptions import SBCError, SessionError, ConnectionError, GraphQLError, PermissionDenied, MutationNotFound, MutationValidationError, MediaStalledError
 
-__version__ = "0.1.5"
+__version__ = "0.2.0"
 
 def client(session_file: str | Path, *, connect: bool = True, auto_join: bool = True, listen_only: bool = True) -> SBCClient:
     """Load an exported ``.sbc`` session and return an independent client."""
@@ -32,7 +34,8 @@ def async_client(session_file: str | Path, *, auto_join: bool = True,
     return AsyncSBCClient(session_file, auto_join=auto_join, listen_only=listen_only)
 
 __all__ = [
-    "client", "async_client", "SBCClient", "AsyncSBCClient", "SBCSession", "SessionHealth", "SessionBridge", "MediaConnectionError",
+    "client", "async_client", "SBCClient", "AsyncSBCClient", "SBCSession", "SessionHealth", "SessionBridge", "MediaConnectionError", "MediaHealth", "AudioPlaylist",
+    "EnduranceMonitor", "ReliabilityReport", "ReliabilitySample", "Bot", "BotState", "CommandContext", "Rule",
     "enable_logging", "EVENTS", "schema", "catalogs", "SchemaCatalog", "BBBTable",
     "Role", "GuestPolicy", "GuestApproval", "PollType", "MediaType", "MediaScope", "Event",
     "Layout", "CaptionProvider", "Reaction", "PresentationFileState", "BreakoutLifecycle", "User", "Meeting", "Chat", "ChatMessage",
@@ -41,5 +44,5 @@ __all__ = [
     "SharedNotesSession", "Recording", "WhiteboardAnnotation", "WhiteboardCursor",
     "Notification", "MediaGroupParticipant", "MediaGroupState", "PluginDataEntry",
     "LayoutState", "SBCError", "SessionError", "ConnectionError", "GraphQLError",
-    "PermissionDenied", "MutationNotFound", "MutationValidationError",
+    "PermissionDenied", "MutationNotFound", "MutationValidationError", "MediaStalledError",
 ]

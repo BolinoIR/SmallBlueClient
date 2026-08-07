@@ -6,13 +6,18 @@ import concurrent.futures
 import contextlib
 import threading
 import json
+import math
+import time
+from collections import deque
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, urljoin
 from urllib.request import Request, urlopen
 
-from ..core.exceptions import ConnectionError
+from ..core.exceptions import ConnectionError, MediaStalledError
 from ..core.logging import debug_trace, get_logger
 
 LIVEKIT_CREDENTIALS = "subscription SBCLiveKitCredentials{user_current{userId livekit{livekitToken} meeting{audioBridge cameraBridge}}}"
@@ -20,6 +25,57 @@ LIVEKIT_CREDENTIALS = "subscription SBCLiveKitCredentials{user_current{userId li
 
 class MediaConnectionError(ConnectionError):
     """BBB did not provide a LiveKit credential for the saved session."""
+
+
+@dataclass(frozen=True, slots=True)
+class MediaHealth:
+    """Observable custom-audio health based on real outbound RTP counters."""
+
+    backend: str
+    connected: bool
+    packets_sent: int = 0
+    bytes_sent: int = 0
+    stale: bool = False
+    recovered: bool = False
+    reason: str | None = None
+    observed_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+class _GainAudioTrack:
+    """Apply gain/fade-in in Python while preserving MediaPlayer's audio clock."""
+
+    @staticmethod
+    def create(source: Any, *, gain_db: float, fade_in: float):
+        if gain_db == 0 and fade_in <= 0:
+            return source
+        from aiortc import MediaStreamTrack
+        from av import AudioFrame
+        import numpy as np
+
+        class GainTrack(MediaStreamTrack):
+            kind = "audio"
+            def __init__(self):
+                super().__init__()
+                self._started: float | None = None
+                self._multiplier = math.pow(10.0, gain_db / 20.0)
+            async def recv(self):
+                frame = await source.recv()
+                now = time.monotonic()
+                if self._started is None:
+                    self._started = now
+                fade = min(1.0, (now - self._started) / fade_in) if fade_in > 0 else 1.0
+                multiplier = self._multiplier * fade
+                if multiplier == 1.0:
+                    return frame
+                samples = frame.to_ndarray()
+                scaled = np.clip(samples.astype(np.float32) * multiplier, -32768, 32767).astype(np.int16)
+                output = AudioFrame.from_ndarray(scaled, format=frame.format.name, layout=frame.layout.name)
+                output.pts, output.time_base, output.sample_rate = frame.pts, frame.time_base, frame.sample_rate
+                return output
+        return GainTrack()
 
 
 class _SilenceAudioTrack:
@@ -81,6 +137,8 @@ class _SFUAudioPublisher:
         self._ready = False
         self._active_file: str | None = None
         self._active_loop = True
+        self._active_gain_db = 0.0
+        self._active_fade_in = 0.0
         self._audio_sender = None
         self._silent_track = None
         self._warmed = False
@@ -173,11 +231,12 @@ class _SFUAudioPublisher:
             return RTCConfiguration(iceServers=servers)
         except Exception as exc:
             raise MediaConnectionError(f"could not fetch BBB TURN credentials: {exc}") from exc
-    async def _play_once(self, filename: str, loop: bool) -> None:
+    async def _play_once(self, filename: str, loop: bool, *, gain_db: float = 0.0,
+                         fade_in: float = 0.0) -> None:
         from aiortc.contrib.media import MediaPlayer
         self.player = MediaPlayer(filename, loop=loop)
         if self.player.audio is None: raise MediaConnectionError("the selected file has no audio stream")
-        await self._connect_track(self.player.audio)
+        await self._connect_track(_GainAudioTrack.create(self.player.audio, gain_db=gain_db, fade_in=fade_in))
 
     async def _connect_track(self, track) -> None:
         from aiortc import RTCPeerConnection, RTCSessionDescription
@@ -357,7 +416,8 @@ class _SFUAudioPublisher:
                     return
                 await asyncio.sleep(delay)
                 try:
-                    await self._play_once(self._active_file, self._active_loop)
+                    await self._play_once(self._active_file, self._active_loop,
+                                          gain_db=self._active_gain_db, fade_in=self._active_fade_in)
                     get_logger().info("BBB media reconnected")
                     return
                 except Exception:
@@ -365,11 +425,12 @@ class _SFUAudioPublisher:
         finally:
             self._reconnect_task = None
 
-    def _swap_warmed_track(self, player: Any, filename: str, loop: bool) -> None:
+    def _swap_warmed_track(self, player: Any, filename: str, loop: bool, *, gain_db: float = 0.0,
+                           fade_in: float = 0.0) -> None:
         """Replace the warm-up silence source without terminating sender RTP."""
         if self._audio_sender is None or player.audio is None:
             raise MediaConnectionError("BBB audio sender or file track is unavailable")
-        self._audio_sender.replaceTrack(player.audio)
+        self._audio_sender.replaceTrack(_GainAudioTrack.create(player.audio, gain_db=gain_db, fade_in=fade_in))
         # Do not call ``stop()`` on the previously attached silence track
         # here. RTCRtpSender can still be awaiting that track's ``recv``;
         # stopping it raises MediaStreamError, terminates the sender's RTP
@@ -379,15 +440,17 @@ class _SFUAudioPublisher:
         self.player, self._silent_track = player, None
         self._warmed = False
         self._active_file, self._active_loop = filename, loop
+        self._active_gain_db, self._active_fade_in = gain_db, fade_in
 
-    async def play(self, filename: str, loop: bool) -> None:
+    async def play(self, filename: str, loop: bool, *, gain_db: float = 0.0,
+                   fade_in: float = 0.0) -> None:
         """Publish audio and retry transient SFU/ICE failures automatically."""
         if self._ready and self._warmed and self.pc and self._audio_sender:
             from aiortc.contrib.media import MediaPlayer
             player = MediaPlayer(filename, loop=loop)
             if player.audio is None:
                 raise MediaConnectionError("the selected file has no audio stream")
-            self._swap_warmed_track(player, filename, loop)
+            self._swap_warmed_track(player, filename, loop, gain_db=gain_db, fade_in=fade_in)
             # Give aiortc one paced audio frame before the BBB mute command is
             # lifted. This mirrors browser AudioBroker's input-stream swap and
             # avoids deployments dropping the first source frame while the
@@ -398,12 +461,13 @@ class _SFUAudioPublisher:
         await self.close()
         self._stopping = False
         self._active_file, self._active_loop = filename, loop
+        self._active_gain_db, self._active_fade_in = gain_db, fade_in
         last_error: Exception | None = None
         delays = (1.0, 2.0, 4.0, 6.0)
         for attempt in range(5):
             try:
                 get_logger().info("Starting BBB custom audio (attempt %s/5)", attempt + 1)
-                await self._play_once(filename, loop)
+                await self._play_once(filename, loop, gain_db=gain_db, fade_in=fade_in)
                 get_logger().info("BBB custom audio is publishing")
                 return
             except Exception as exc:
@@ -417,6 +481,17 @@ class _SFUAudioPublisher:
         # BBB's userSetMuted mutation controls the participant mute state. The
         # source track remains alive so unmute does not require renegotiation.
         return
+
+    async def reconnect_now(self, reason: str = "media health recovery") -> None:
+        """Replace a stale sender with a fresh BBB SFU/WebRTC session."""
+        if not self._active_file or not self._active_loop:
+            raise MediaStalledError("audio is not a looping active source", recoverable=False)
+        get_logger().warning("Restarting BBB audio sender: %s", reason)
+        await self._dispose()
+        self._stopping = False
+        await self._play_once(self._active_file, self._active_loop,
+                              gain_db=self._active_gain_db, fade_in=self._active_fade_in)
+        get_logger().info("BBB audio sender recovered")
     async def _dispose(self) -> None:
         self._ready = False
         task = self._signal_task
@@ -757,10 +832,17 @@ class _LiveKitPublisher:
 
 class _Source:
     def __init__(self, media: "MediaController", kind: str): self.media, self.kind = media, kind
-    def play(self, file: str | Path, *, loop: bool = True, frame_rate: int = 30) -> None:
+    def play(self, file: str | Path, *, loop: bool = True, frame_rate: int = 30,
+             gain_db: float = 0.0, fade_in: float = 0.0) -> None:
+        """Publish a local source, optionally changing level and fading it in.
+
+        ``gain_db`` is applied before frames enter WebRTC. ``fade_in`` is in
+        seconds and avoids an abrupt clip start. It is supported for audio.
+        """
         path = Path(file).expanduser()
         if not path.is_file(): raise FileNotFoundError(path)
-        self.media._play(self.kind, path, loop, frame_rate)
+        if fade_in < 0: raise ValueError("fade_in must be zero or positive")
+        self.media._play(self.kind, path, loop, frame_rate, gain_db=gain_db, fade_in=fade_in)
     def prepare(self, file: str | Path) -> Path:
         """Decode-check a file before it is needed by an event handler."""
         path = Path(file).expanduser()
@@ -770,9 +852,97 @@ class _Source:
         """Pre-connect a muted BBB microphone for low-latency ``play()``."""
         if self.kind != "audio": raise MediaConnectionError("only audio can be warmed")
         self.media._warm_audio()
+    def health(self, *, stall_after: float = 20.0, recover: bool = True) -> MediaHealth:
+        """Inspect outbound RTP and optionally repair a stalled looping source."""
+        if self.kind != "audio":
+            raise MediaConnectionError("health checks are currently available for audio only")
+        return self.media.audio_health(stall_after=stall_after, recover=recover)
+    def enqueue(self, file: str | Path, *, gain_db: float = 0.0, fade_in: float = 0.0,
+                duration: float | None = None) -> int:
+        """Append one non-looping clip to the serialized audio playlist."""
+        if self.kind != "audio": raise MediaConnectionError("only audio supports a playlist")
+        return self.media.playlist.enqueue(file, gain_db=gain_db, fade_in=fade_in, duration=duration)
+    def schedule(self, file: str | Path, *, delay: float = 0.0, loop: bool = False,
+                 gain_db: float = 0.0, fade_in: float = 0.0) -> threading.Timer:
+        """Schedule a source after ``delay`` seconds and return its cancelable timer."""
+        path = Path(file).expanduser()
+        if not path.is_file(): raise FileNotFoundError(path)
+        if delay < 0: raise ValueError("delay must be zero or positive")
+        timer = threading.Timer(delay, self.play, kwargs={"file": path, "loop": loop,
+                                                         "gain_db": gain_db, "fade_in": fade_in})
+        timer.daemon = True; timer.start()
+        self.media._timers.append(timer)
+        return timer
     def mute(self) -> None: self.media._mute(self.kind, True)
     def unmute(self) -> None: self.media._mute(self.kind, False)
     def stop(self) -> None: self.media._stop(self.kind)
+
+
+@dataclass(frozen=True, slots=True)
+class AudioQueueItem:
+    """One serial playlist item; ``duration`` overrides decoded duration."""
+    file: Path
+    gain_db: float = 0.0
+    fade_in: float = 0.0
+    duration: float | None = None
+
+
+class AudioPlaylist:
+    """Threaded, deterministic serial playback queue for short BBB clips."""
+    def __init__(self, media: "MediaController") -> None:
+        self._media = media
+        self._items: deque[AudioQueueItem] = deque()
+        self._condition = threading.Condition()
+        self._closed = False
+        self._thread: threading.Thread | None = None
+
+    @property
+    def pending(self) -> int:
+        with self._condition: return len(self._items)
+
+    def enqueue(self, file: str | Path, *, gain_db: float = 0.0,
+                fade_in: float = 0.0, duration: float | None = None) -> int:
+        path = self._media._prepare("audio", Path(file).expanduser())
+        if duration is not None and duration <= 0: raise ValueError("duration must be positive")
+        with self._condition:
+            self._items.append(AudioQueueItem(path, gain_db, fade_in, duration))
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, daemon=True, name="sbc-audio-playlist")
+                self._thread.start()
+            self._condition.notify_all()
+            return len(self._items)
+
+    def clear(self) -> None:
+        with self._condition: self._items.clear()
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True; self._items.clear(); self._condition.notify_all()
+
+    @staticmethod
+    def _duration(item: AudioQueueItem) -> float:
+        if item.duration is not None: return item.duration
+        try:
+            import av
+            with av.open(str(item.file)) as container:
+                return max(0.1, float(container.duration or 1_000_000) / 1_000_000)
+        except Exception:
+            return 1.0
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                if not self._items:
+                    return
+                if self._closed: return
+                item = self._items.popleft()
+            try:
+                self._media.audio.play(item.file, loop=False, gain_db=item.gain_db, fade_in=item.fade_in)
+                # Wait for the source duration before sending the next clip.
+                # A caller can override duration when a container omits it.
+                time.sleep(self._duration(item))
+            except Exception as exc:
+                get_logger().warning("SBC audio playlist item failed (%s): %s", item.file.name, exc)
 
 
 class _ListenerSource:
@@ -791,6 +961,9 @@ class MediaController:
     """Publish local media files directly to BBB's configured media backend."""
     def __init__(self, client: Any):
         self.client = client; self.audio = _Source(self, "audio"); self.camera = _Source(self, "video"); self.listener = _ListenerSource(self); self.microphone = _MicrophoneSource(self); self._instance: _LiveKitPublisher | None = None; self._sfu: _SFUAudioPublisher | None = None; self._sfu_video: _SFUVideoPublisher | None = None; self._listener: _SFUListener | None = None; self._backend: dict[str, Any] | None = None
+        self._audio_observation: tuple[float, int, int] | None = None
+        self._timers: list[threading.Timer] = []
+        self.playlist = AudioPlaylist(self)
     def _publisher(self) -> _LiveKitPublisher:
         if self._instance is None: self._instance = _LiveKitPublisher()
         return self._instance
@@ -856,7 +1029,8 @@ class MediaController:
         # The connection is real full audio, but its silent source must remain
         # muted until a script explicitly plays audio.
         self.client.users.mute(self.client.session.user_id or "")
-    def _play(self, kind: str, path: Path, loop: bool, frame_rate: int) -> None:
+    def _play(self, kind: str, path: Path, loop: bool, frame_rate: int,
+              *, gain_db: float = 0.0, fade_in: float = 0.0) -> None:
         backend = self._media_backend()
         debug_trace("media.publish_requested", kind=kind, filename=path.name, loop=loop, backend=backend.get("audioBridge") if kind == "audio" else backend.get("cameraBridge"))
         if backend.get("livekit_token"):
@@ -867,7 +1041,7 @@ class MediaController:
             self._leave_listener()
             if self._sfu is None: self._sfu = _SFUAudioPublisher(self.client.session)
             try:
-                self._sfu.submit(self._sfu.play(str(path), loop)).result()
+                self._sfu.submit(self._sfu.play(str(path), loop, gain_db=gain_db, fade_in=fade_in)).result()
             except MediaConnectionError:
                 # BBB's own UserJoinMeetingReq handler has an explicit
                 # reconnect branch. Re-run that source-defined recovery once,
@@ -876,7 +1050,7 @@ class MediaController:
                 self.client.ensure_joined(force=True)
                 self._sfu.submit(self._sfu.close()).result()
                 self._sfu = _SFUAudioPublisher(self.client.session)
-                self._sfu.submit(self._sfu.play(str(path), loop)).result()
+                self._sfu.submit(self._sfu.play(str(path), loop, gain_db=gain_db, fade_in=fade_in)).result()
             self._mute("audio", False)
             self._verify_audio_input_state()
             return
@@ -953,7 +1127,40 @@ class MediaController:
             "camera": sfu_state(self._sfu_video),
             "listener": sfu_state(self._listener),
         }
+    def audio_health(self, *, stall_after: float = 20.0, recover: bool = True) -> MediaHealth:
+        """Check that a connected looping SFU source is actually emitting RTP.
+
+        A peer connection can be ``connected`` while an encoder has stopped.
+        This method detects that condition from counter progress and makes one
+        fresh SFU connection when recovery is enabled.
+        """
+        if stall_after <= 0: raise ValueError("stall_after must be positive")
+        state = self.status(); stats = state["audio_stats"]
+        now = time.monotonic(); packets = int(stats.get("packets_sent", 0)); bytes_sent = int(stats.get("bytes_sent", 0))
+        connected = state["audio"] == "connected"
+        stale = False; reason = None; recovered = False
+        previous = self._audio_observation
+        if not connected and self._sfu and self._sfu._active_file:
+            stale, reason = True, f"connection state is {state['audio']}"
+        elif connected and previous and (packets, bytes_sent) == previous[1:] and now - previous[0] >= stall_after:
+            stale, reason = True, f"outbound RTP did not advance for {now - previous[0]:.1f}s"
+        self._audio_observation = (now, packets, bytes_sent)
+        if stale and recover and self._sfu is not None:
+            try:
+                self._sfu.submit(self._sfu.reconnect_now(reason or "stalled RTP")).result(timeout=35)
+                recovered = True
+                self._audio_observation = None
+            except Exception as exc:
+                raise MediaStalledError("BBB audio appears stalled and recovery failed", recoverable=True,
+                                       context={"reason": reason, "error": str(exc)}) from exc
+        return MediaHealth(backend=str(state["backend"]), connected=connected,
+                           packets_sent=packets, bytes_sent=bytes_sent, stale=stale,
+                           recovered=recovered, reason=reason,
+                           observed_at=datetime.now(timezone.utc).isoformat())
     def close(self) -> None:
+        self.playlist.close()
+        for timer in self._timers: timer.cancel()
+        self._timers.clear()
         if self._instance is not None: self._instance.submit(self._instance.close()).result(); self._instance = None
         if self._sfu is not None: self._sfu.submit(self._sfu.close()).result(); self._sfu = None
         if self._sfu_video is not None: self._sfu_video.submit(self._sfu_video.close()).result(); self._sfu_video = None

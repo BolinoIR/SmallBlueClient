@@ -1,5 +1,21 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.2.0 — Reliability, CLI, media controls, and bot framework
+
+- Added the ``sbc validate``, ``sbc inspect``, ``sbc diagnose``,
+  ``sbc endurance``, and ``sbc run`` command-line tools.
+- Added credential-safe long-running ``EnduranceMonitor`` reports with session,
+  media, outbound-RTP, and recovery observations.
+- Added audio RTP health checks, stale looping-source recovery, gain in dB,
+  fade-in, serial queued clips, and delayed scheduled playback.
+- Added structured exceptions with stable error codes/context and
+  ``MediaStalledError`` for actionable recovery handling.
+- Added the optional ``sbc.Bot`` framework with commands, cooldowns,
+  moderator permission helper, periodic tasks, self-message filtering, and
+  JSON-backed state.
+- Added reliability, CLI, and bot framework documentation plus GitHub release,
+  dependency-audit, static-scan, and Dependabot configuration.
+
 ## 0.1.5 — Reliable BBB microphone publishing and full contract tests
 
 - Fixed full-audio joins explicitly clearing BBB's retained listener-input
