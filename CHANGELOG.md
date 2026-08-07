@@ -1,5 +1,14 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.1.1 — Public-chat delivery fix
+
+- Fixed ``client.chat.send()`` and ``await client.chat.send()`` using a BBB
+  meeting ID as the public ``chatId``.
+- SBC now uses BBB HTML5's source-defined public chat group:
+  ``MAIN-PUBLIC-GROUP-CHAT``.
+- Added a regression test for synchronous and asynchronous public-chat
+  delivery.
+
 ## Breaking change: Python-first SBC
 
 SBC changed from a Chrome-extension automation UI into a Python automation
