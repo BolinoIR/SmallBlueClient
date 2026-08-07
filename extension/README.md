@@ -5,6 +5,14 @@ passively observes the active BigBlueButton page's real GraphQL WebSocket
 connection, captures the authenticated connection payload and browser cookies,
 and exports a portable `.sbc` file for the Python library.
 
+## Version 1.0.5
+
+Exports now always download as ``.sbc`` credential packages rather than JSON
+documents. Each session includes the BBB HTML5 client's public
+``bbb_webrtc_sfu`` settings snapshot, including the audio/listen-only/camera
+media-server fields and the ICE/STUN configuration used by the Python media
+client.
+
 ## Load locally
 
 1. Open `chrome://extensions`.

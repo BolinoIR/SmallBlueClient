@@ -37,10 +37,18 @@ exportButton.addEventListener("click", async () => {
     const canonical = stableStringify(activeSession);
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
     const sha256 = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    const blob = new Blob([JSON.stringify({ session: activeSession, sha256 }, null, 2)], { type: "application/json" });
+    // A .sbc file is JSON data, but it is a credential package rather than a
+    // document for a browser JSON viewer.  Using a generic binary MIME type
+    // keeps Chrome from selecting/appending the .json extension in Save As.
+    const blob = new Blob([JSON.stringify({ session: activeSession, sha256 }, null, 2)], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
     const meeting = (activeSession.meeting_name || "bbb-session").replace(/[^a-z0-9]+/gi, "-").replace(/(^-|-$)/g, "").toLowerCase();
-    await chrome.downloads.download({ url, filename: `${meeting || "bbb-session"}.sbc`, saveAs: true });
+    await chrome.downloads.download({
+      url,
+      filename: `${meeting || "bbb-session"}.sbc`,
+      saveAs: true,
+      conflictAction: "uniquify",
+    });
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     statusElement.textContent = "Session exported. Keep the .sbc file private.";
   } catch (error) {

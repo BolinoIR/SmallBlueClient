@@ -18,6 +18,51 @@
 
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const notify = () => window.postMessage({ type: "SBC_PAGE_CAPTURE_UPDATED", capture: session() }, "*");
+
+  /**
+   * Read the exact public client settings used by BBB's HTML5 client for its
+   * bbb-webrtc-sfu bridge. These names mirror the BBB source:
+   *
+   * - public.kurento.wsUrl, listenOnlyMediaServer, videoMediaServer,
+   *   signalCandidates and gatheringTimeout
+   * - public.media.audio.fullAudioMediaServer, listenOnlyOffering,
+   *   iceGatheringTimeout and stunTurnServersFetchAddress
+   *
+   * This is a passive settings read. SBC never opens or controls an SFU
+   * connection from the extension.
+   */
+  function bbbWebrtcSfuSnapshot() {
+    const settings = window.meetingClientSettings?.public || {};
+    const kurento = settings.kurento || {};
+    const media = settings.media || {};
+    const configuredUrl = kurento.wsUrl;
+    const websocketOrigin = location.protocol === "https:" ? "wss:" : "ws:";
+    let url = `${websocketOrigin}//${location.host}/bbb-webrtc-sfu`;
+
+    if (typeof configuredUrl === "string" && configuredUrl && configuredUrl !== "HOST") {
+      try {
+        url = new URL(configuredUrl, location.origin).toString();
+      } catch (_) {
+        // Preserve the BBB HTML5 default URL when a deployment setting is not
+        // a valid browser URL.
+      }
+    }
+
+    const configuredTimeout = kurento.gatheringTimeout ?? media.iceGatheringTimeout;
+    return {
+      url,
+      audio_media_server: media.audio?.fullAudioMediaServer ?? null,
+      listen_only_media_server: kurento.listenOnlyMediaServer ?? null,
+      listen_only_offering: media.listenOnlyOffering ?? false,
+      camera_media_server: kurento.videoMediaServer ?? null,
+      signal_candidates: kurento.signalCandidates ?? false,
+      // BBB's HTML5 initial settings use five seconds when no deployment
+      // override is supplied.
+      ice_gathering_timeout: configuredTimeout ?? 5000,
+      stun_turn_url: media.stunTurnServersFetchAddress || "/bigbluebutton/api/stuns",
+    };
+  }
+
   const session = () => ({
     detected: state.detected,
     session: {
@@ -47,6 +92,7 @@
           join_error_code: state.currentUser.joinErrorCode || null,
           join_error_message: state.currentUser.joinErrorMessage || null,
         } : {},
+        bbb_webrtc_sfu: bbbWebrtcSfuSnapshot(),
         ...(state.livekit.token ? { livekit: clone(state.livekit) } : {}),
       },
       headers: {},
