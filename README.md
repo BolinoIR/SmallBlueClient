@@ -1,8 +1,39 @@
 # SmallBlueClient
 
-SmallBlueClient (SBC) is a community Python automation client for an authenticated
-BigBlueButton browser session. The Chrome extension detects the BBB GraphQL socket
-and exports a portable `.sbc` session; Python provides the simple automation API.
+<p align="center">
+  <img src="icon700.png" width="144" alt="SmallBlueClient icon">
+</p>
+
+<p align="center">
+  <strong>Community automation for authenticated BigBlueButton sessions.</strong><br>
+  Export a session once. Build powerful bots in Python.
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/SmallBlueClient/"><img src="https://img.shields.io/pypi/v/SmallBlueClient?logo=pypi&logoColor=white&label=PyPI" alt="PyPI"></a>
+  <a href="https://sbc.protobuf.lol"><img src="https://img.shields.io/badge/docs-sbc.protobuf.lol-2563eb?logo=readthedocs&logoColor=white" alt="Documentation"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-16a34a" alt="MIT License"></a>
+  <a href="https://github.com/BolinoIR/SmallBlueClient"><img src="https://img.shields.io/github/stars/BolinoIR/SmallBlueClient?style=flat&logo=github" alt="GitHub stars"></a>
+</p>
+
+---
+
+## Why SBC?
+
+SmallBlueClient (SBC) is a Python-first toolkit for BigBlueButton. The included
+Chrome extension is deliberately tiny: it **only** passively captures the real,
+authenticated BBB GraphQL session and exports a portable `.sbc` credential. All
+automation, media, events, models, reconnects, and controllers live in Python.
+
+| Build | With SBC |
+| --- | --- |
+| **Bots** | welcome users, moderate rooms, react to events, manage breakouts |
+| **Automation** | chat, polls, captions, presentations, cameras, timers, recordings |
+| **Custom media** | publish Python-controlled audio and video where supported by BBB |
+| **Typed code** | controllers, enums, models, generated schema catalog, async API |
+| **Multiple meetings** | one independent `sbc.client("meeting.sbc")` per session |
+
+## Install
 
 ```bash
 pip install SmallBlueClient
@@ -11,29 +42,60 @@ pip install SmallBlueClient
 ```python
 import sbc
 
-client = sbc.client("teacher.sbc")
-print(client.meeting.name)
-client.chat.send("Hello from SBC")
+with sbc.client("teacher.sbc") as client:
+    print(client.meeting.name)
+    client.chat.send("Hello from SBC")
 ```
 
-All 109 BBB mutations are embedded in the installed Python package and are
-available through a validated registry. Names work in BBB camelCase or Python
-snake_case:
+Read the complete guides and generated API reference at
+**[sbc.protobuf.lol](https://sbc.protobuf.lol)**.
+
+## Quick start
+
+1. Load the [`extension/`](extension/README.md) directory through
+   `chrome://extensions` → **Load unpacked**.
+2. Join your BBB meeting normally and open **SBC Session Extractor**.
+3. Export the detected `.sbc` file and keep it private.
+4. Start writing Python:
+
+```python
+import sbc
+
+bot = sbc.client("classroom.sbc")
+
+@bot.on(sbc.Event.USER_JOINED)
+def welcome(user: sbc.User) -> None:
+    bot.chat.send(f"Welcome, {user.name}!")
+
+bot.run()
+```
+
+> [!IMPORTANT]
+> An `.sbc` export is an authenticated browser credential. Do not commit it,
+> send it to someone else, or publish it in bug reports.
+
+## Session extractor
+
+The included extension is a **passive session extractor, not the SBC program**.
+It observes the BBB page's actual GraphQL WebSocket, captures the observed
+connection payload, adds browser cookies through Chrome's extension API, and
+downloads an integrity-checked `.sbc` file. It does **not** send GraphQL
+mutations, automate BBB, alter media, spoof devices, or run a localhost bridge.
+
+The retired v5 automation extension is stored locally in
+`archive/chrome-extension-v5.0.1/` and is not part of this repository.
+
+## Escape hatch: source-derived actions
+
+High-level controllers cover normal tasks. For experiments, all 109 BBB
+mutations are embedded in the installed Python package and are validated before
+they are sent. Both BBB camelCase and clean Python snake_case are supported:
 
 ```python
 client.actions.userSetMuted(userId="user-id", muted=True)
 client.actions.user_set_muted(userId="user-id", muted=True)
 client.mutation("meetingEnd")
 ```
-
-## Extension flow
-
-1. Load this directory as an unpacked Chrome extension.
-2. Join a BBB meeting normally. SBC stays idle on other pages and becomes active
-   only after observing BBB GraphQL traffic.
-3. Open the popup and export the detected session as `.sbc`.
-4. Keep the exported session private: it contains your authenticated browser
-   session and expires when BBB/browser authentication expires.
 
 ## Bots and events
 

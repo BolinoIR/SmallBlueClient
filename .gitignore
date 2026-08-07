@@ -19,7 +19,7 @@ examples/test.mp3
 # BBB source checkouts are release-build inputs, never project source.
 bigbluebutton-*/
 
-# Browser extension work is intentionally private until it is complete.
+# Archived legacy Chrome-extension automation code stays local.
 actions.json
 background.js
 content.js
@@ -32,6 +32,4 @@ session/
 Scripts/
 tw.js
 Version-*/
-.github/
 archive/
-extension/
