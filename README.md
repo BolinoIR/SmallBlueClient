@@ -50,6 +50,8 @@ with sbc.client("teacher.sbc") as client:
 Read the complete guides and generated API reference at
 **[sbc.protobuf.lol](https://sbc.protobuf.lol)**.
 
+See the full migration history in [CHANGELOG.md](CHANGELOG.md).
+
 ## Quick start
 
 1. Load the [`extension/`](extension/README.md) directory through
