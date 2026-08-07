@@ -1,5 +1,33 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.1.5 — Reliable BBB microphone publishing and full contract tests
+
+- Fixed full-audio joins explicitly clearing BBB's retained listener-input
+  preference before opening or warming the microphone. A bot can no longer
+  have a connected SFU sender that BBB still treats as listen-only.
+- Added BBB source-backed full-audio SDP mode handling. Fresh extractor
+  sessions capture ``fullAudioOffering`` and ``transparentListenOnly`` so the
+  Python publisher follows the deployment's offer/answer role.
+- Added a paced source swap before unmuting prepared audio, preventing BBB
+  from dropping the first non-silent custom-media frames.
+- Fixed the warm-up source and decoded file source using incompatible audio
+  layouts. Both now use BBB/aiortc's 48 kHz ``s16`` stereo format, preventing
+  aiortc's RTP task from terminating with ``Frame does not match
+  AudioResampler setup`` after an MP3 is attached.
+- Added sender-level ``client.media.status()["audio_stats"]`` RTP counters so
+  a script can verify that packets and bytes are actually leaving Python.
+- Made idle microphone warm-up opt-in. ``listen_only=False`` now selects BBB
+  full-audio input state without opening a temporary silent sender; explicit
+  ``client.media.audio.warmup()`` remains available for latency-sensitive bots.
+- Added the BBB source-defined JSON audio heartbeat (``{"id": "ping"}``) to
+  keep long-running SFU publisher sessions alive instead of relying only on
+  WebSocket control pings.
+- Added a GitHub Actions matrix for Python 3.10–3.12, unit tests, wheel/sdist
+  validation, clean wheel installation, and warning-free Sphinx builds.
+- Expanded local coverage to include all 109 raw actions, all high-level
+  controller write mappings, diagnostics/action-plan commands, media
+  negotiation modes, and every typed BBB model.
+
 ## 0.1.4 — Full capability diagnostics and BBB chat read state
 
 - Corrected the embedded ``chatSetLastSeen`` definition to the BBB HTML5 and

@@ -5,6 +5,12 @@ passively observes the active BigBlueButton page's real GraphQL WebSocket
 connection, captures the authenticated connection payload and browser cookies,
 and exports a portable `.sbc` file for the Python library.
 
+## Version 1.0.6
+
+Exports now include BBB's configured SFU audio negotiation settings
+(``fullAudioOffering`` and ``transparentListenOnly``) so the Python media
+publisher can use the same source-defined SDP role as the HTML5 client.
+
 ## Version 1.0.5
 
 Exports now always download as ``.sbc`` credential packages rather than JSON

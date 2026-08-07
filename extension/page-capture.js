@@ -45,8 +45,9 @@
    *
    * - public.kurento.wsUrl, listenOnlyMediaServer, videoMediaServer,
    *   signalCandidates and gatheringTimeout
-   * - public.media.audio.fullAudioMediaServer, listenOnlyOffering,
-   *   iceGatheringTimeout and stunTurnServersFetchAddress
+   * - public.media.audio.fullAudioMediaServer, fullAudioOffering,
+   *   listenOnlyOffering, transparentListenOnly, iceGatheringTimeout and
+   *   stunTurnServersFetchAddress
    *
    * This is a passive settings read. SBC never opens or controls an SFU
    * connection from the extension.
@@ -73,7 +74,12 @@
       url,
       audio_media_server: media.audio?.fullAudioMediaServer ?? null,
       listen_only_media_server: kurento.listenOnlyMediaServer ?? null,
+      // These three settings control the exact AudioBroker SDP negotiation
+      // path. SBC's Python microphone publisher mirrors it rather than
+      // assuming that every BBB deployment is a local SDP offerer.
+      full_audio_offering: media.fullAudioOffering ?? true,
       listen_only_offering: media.listenOnlyOffering ?? false,
+      transparent_listen_only: media.transparentListenOnly ?? true,
       camera_media_server: kurento.videoMediaServer ?? null,
       signal_candidates: kurento.signalCandidates ?? false,
       // BBB's HTML5 initial settings use five seconds when no deployment

@@ -298,6 +298,13 @@ class SBCClient(EventEmitter):
         self._enabled_event_streams: set[str] = set()
         self.auto_join = auto_join
         self.listen_only = listen_only
+        # ``ensure_joined`` can be reached repeatedly (for example after a
+        # subscription reconnect).  Apply the requested audio mode once per
+        # client connection, even when the saved BBB identity was already
+        # present when SBC started.  Without this, ``listen_only=False``
+        # silently did nothing for an already-active identity and custom
+        # audio had no warmed microphone publisher to use.
+        self._initial_media_mode_applied = False
         if connect: self.connect()
 
     def __enter__(self) -> "SBCClient":
@@ -389,6 +396,12 @@ class SBCClient(EventEmitter):
             active = current.get("joined") and current.get("currently_in_meeting") and not current.get("logged_out") and not current.get("ejected")
             if active and not force:
                 get_logger().info("BBB confirms the saved user is already in the meeting")
+                if not self._initial_media_mode_applied:
+                    if self.listen_only:
+                        self._set_listen_only_default()
+                    else:
+                        self._set_microphone_default()
+                    self._initial_media_mode_applied = True
                 return False
         token = current.get("auth_token") or self.session.snapshot.get("auth_token")
         state_known = bool(current)
@@ -426,6 +439,7 @@ class SBCClient(EventEmitter):
                     self._set_listen_only_default()
                 else:
                     self._set_microphone_default()
+                self._initial_media_mode_applied = True
                 return True
             if current and (current.get("ejected") or current.get("join_error_code")):
                 detail = current.get("join_error_message") or current.get("join_error_code")
@@ -450,10 +464,21 @@ class SBCClient(EventEmitter):
             get_logger().warning("BBB listener session could not be started: %s", exc)
 
     def _set_microphone_default(self) -> None:
-        """Join a muted full-audio BBB session for low-latency automation."""
+        """Select full-audio mode without opening an idle silent publisher.
+
+        ``media.audio.play()`` starts its own sender when there is an actual
+        file to publish.  Automatic warm-up is deliberately opt-in via
+        ``media.audio.warmup()`` because some BBB SFU deployments immediately
+        tear down an idle silent microphone and it can make the microphone UI
+        flash before any user-requested audio exists.
+        """
         try:
-            get_logger().info("Starting muted BBB microphone mode")
-            self.media.microphone.join()
+            get_logger().info("Selecting BBB full-audio mode (idle microphone warm-up is disabled)")
+            # A session may previously have been listener-only. BBB keeps this
+            # client setting across reconnections; clear it before warming the
+            # sendrecv SFU stream or the server can accept WebRTC while still
+            # suppressing the participant's microphone input.
+            self.actions.userSetListenOnlyInput(listenOnlyInputDevice=False)
         except Exception as exc:
             get_logger().warning("BBB microphone mode could not be started: %s", exc)
     def close(self) -> None:

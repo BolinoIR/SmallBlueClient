@@ -203,12 +203,13 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(client.graphql.transport.last_variables, {"listenOnlyInputDevice": True})
         join_listener.assert_called_once()
 
-    def test_new_join_can_start_muted_microphone_mode(self):
+    def test_new_join_selects_full_audio_mode_without_automatic_warmup(self):
         session = SBCSession(
             server="https://bbb.example", websocket_url="wss://bbb.example/graphql",
             snapshot={"current_user": {"auth_token": "bbb-auth", "joined": False, "currently_in_meeting": False}},
         )
         client = SBCClient(session, connect=False, listen_only=False)
+        client.graphql.transport = Transport()
         states = iter([
             {"auth_token": "bbb-auth", "joined": False, "currently_in_meeting": False},
             {"auth_token": "bbb-auth", "joined": True, "currently_in_meeting": True},
@@ -216,7 +217,27 @@ class ClientTests(unittest.TestCase):
         client._fetch_current_user = lambda **_: next(states)  # type: ignore[method-assign]
         with patch("sbc.core.client.GraphQLClient"), patch.object(client.media.microphone, "join") as join_microphone:
             self.assertTrue(client.ensure_joined(timeout=1))
-        join_microphone.assert_called_once()
+        join_microphone.assert_not_called()
+        self.assertIn("userSetListenOnlyInput", client.graphql.transport.last_query)
+        self.assertEqual(client.graphql.transport.last_variables, {"listenOnlyInputDevice": False})
+
+    def test_existing_user_still_initializes_requested_microphone_mode(self):
+        session = SBCSession(
+            server="https://bbb.example", websocket_url="wss://bbb.example/graphql",
+            snapshot={"current_user": {"auth_token": "bbb-auth", "joined": True, "currently_in_meeting": True}},
+        )
+        client = SBCClient(session, connect=False, listen_only=False)
+        client.graphql.transport = Transport()
+        client._fetch_current_user = lambda **_: {  # type: ignore[method-assign]
+            "auth_token": "bbb-auth", "joined": True, "currently_in_meeting": True,
+        }
+        with patch.object(client.media.microphone, "join") as join_microphone:
+            self.assertFalse(client.ensure_joined(timeout=1))
+            self.assertFalse(client.ensure_joined(timeout=1))
+        join_microphone.assert_not_called()
+        self.assertTrue(client._initial_media_mode_applied)
+        self.assertIn("userSetListenOnlyInput", client.graphql.transport.last_query)
+        self.assertEqual(client.graphql.transport.last_variables, {"listenOnlyInputDevice": False})
 
     def test_runtime_join_state_never_rewrites_the_loaded_session_file(self):
         with tempfile.TemporaryDirectory() as directory:

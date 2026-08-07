@@ -23,7 +23,15 @@ class MediaConnectionError(ConnectionError):
 
 
 class _SilenceAudioTrack:
-    """Lazy aiortc-compatible 48 kHz silent audio source for SFU warm-up."""
+    """Lazy aiortc-compatible 48 kHz stereo source for SFU warm-up.
+
+    aiortc's Opus encoder fixes its resampler layout from the first warm-up
+    frame. BBB/MediaPlayer file sources use 48 kHz ``s16`` stereo, so the
+    silence source must use that same layout. A mono warm-up followed by a
+    stereo MP3 makes the RTP task terminate with ``Frame does not match
+    AudioResampler setup`` while the WebRTC connection misleadingly remains
+    ``connected``.
+    """
     # Defined as a wrapper so importing SBC itself does not import aiortc.
     @staticmethod
     def create():
@@ -47,7 +55,7 @@ class _SilenceAudioTrack:
                 else:
                     self.timestamp += samples
                     await asyncio.sleep(max(0, self.started + self.timestamp / sample_rate - loop.time()))
-                frame = AudioFrame(format="s16", layout="mono", samples=samples)
+                frame = AudioFrame(format="s16", layout="stereo", samples=samples)
                 for plane in frame.planes:
                     plane.update(b"\x00" * plane.buffer_size)
                 frame.pts = self.timestamp
@@ -67,6 +75,7 @@ class _SFUAudioPublisher:
         self.pc = None; self.ws = None; self.player = None; self.connection_state = "new"
         self._session_number = 0
         self._signal_task: asyncio.Task | None = None
+        self._heartbeat_task: asyncio.Task | None = None
         self._reconnect_task: asyncio.Task | None = None
         self._stopping = True
         self._ready = False
@@ -94,6 +103,49 @@ class _SFUAudioPublisher:
         return self.session.snapshot.get("bbb_webrtc_sfu") or {}
     def _setting(self, name: str, default: Any = None) -> Any:
         return self._settings.get(name, default)
+
+    def _full_audio_offering(self) -> bool:
+        """Return BBB HTML5's actual full-audio SDP-offering mode.
+
+        BBB 3.0's ``SFUAudioBridge.getOfferingRole`` makes a full-audio
+        publisher answer the SFU offer whenever transparent listen-only is
+        enabled.  The server's stock setting enables that feature, so treating
+        every publisher as an offerer can establish a peer connection while
+        leaving its input media unusable.  New extractor sessions record both
+        flags; old sessions use the BBB 3.0 source default.
+        """
+        # Sessions exported before SBC 0.1.5 lack these flags. BBB 3.0's
+        # source defaults transparent listen-only to true, which makes full
+        # audio the answerer.  Use that source default rather than treating an
+        # old session as an offerer.  The accompanying ``transparentListenOnly``
+        # start field below is essential for this answerer route.
+        if "transparent_listen_only" not in self._settings and "full_audio_offering" not in self._settings:
+            return False
+        transparent = bool(self._setting("transparent_listen_only", True))
+        return not transparent and bool(self._setting("full_audio_offering", True))
+
+    def _start_request(self, local_offer: str | None) -> dict[str, Any]:
+        """Build BBB HTML5's exact ``AudioBroker.sendStartReq`` payload.
+
+        Keeping this small payload constructor separate makes the critical SFU
+        contract regression-testable without a network, TURN server, or
+        aiortc peer connection.
+        """
+        self._session_number += 1
+        request: dict[str, Any] = {
+            "id": "start",
+            "type": "audio",
+            "role": "sendrecv",
+            "clientSessionNumber": self._session_number,
+            "transparentListenOnly": bool(self._setting("transparent_listen_only", True)),
+        }
+        if local_offer:
+            request["sdpOffer"] = local_offer
+        media_server = self._setting("audio_media_server")
+        if media_server:
+            request["mediaServer"] = media_server
+        return request
+
     def _session_token(self) -> str:
         page_url = self.session.metadata.get("page_url", "")
         token = parse_qs(urlparse(page_url).query).get("sessionToken", [None])[0]
@@ -130,7 +182,8 @@ class _SFUAudioPublisher:
     async def _connect_track(self, track) -> None:
         from aiortc import RTCPeerConnection, RTCSessionDescription
         import websockets
-        debug_trace("media.sfu_audio_connect_start", url=self._url())
+        offering = self._full_audio_offering()
+        debug_trace("media.sfu_audio_connect_start", url=self._url(), offering=offering)
         self.pc = RTCPeerConnection(self._ice_configuration())
         self._audio_sender = self.pc.addTrack(track)
         connected = asyncio.Event()
@@ -140,21 +193,43 @@ class _SFUAudioPublisher:
             if self.connection_state in ("connected", "failed", "closed"): connected.set()
             if self._ready and self.connection_state in ("failed", "closed"):
                 self._schedule_reconnect()
-        offer = await self.pc.createOffer(); await self.pc.setLocalDescription(offer)
-        while self.pc.iceGatheringState != "complete": await asyncio.sleep(0.05)
+        local_offer = None
+        if offering:
+            offer = await self.pc.createOffer()
+            await self.pc.setLocalDescription(offer)
+            while self.pc.iceGatheringState != "complete":
+                await asyncio.sleep(0.05)
+            local_offer = self.pc.localDescription.sdp
         headers = [(key, value) for key, value in self.session.headers.items() if value]
         self.ws = await websockets.connect(self._url(), extra_headers=headers, ping_interval=15, ping_timeout=20)
-        # Exact BBB 3.0.32 AudioBroker.sendStartReq message for a full-audio sender.
-        self._session_number += 1
-        message = {"id": "start", "type": "audio", "role": "sendrecv", "clientSessionNumber": self._session_number, "sdpOffer": self.pc.localDescription.sdp}
-        media_server = self._setting("audio_media_server")
-        if media_server: message["mediaServer"] = media_server
+        # Exact BBB 3.0.32 AudioBroker.sendStartReq message. Full audio can be
+        # either the offerer or answerer depending on transparent listen-only.
+        message = self._start_request(local_offer)
         await self.ws.send(json.dumps(message))
-        async for raw in self.ws:
+        while True:
+            try:
+                raw = await asyncio.wait_for(self.ws.recv(), timeout=20)
+            except TimeoutError as exc:
+                raise MediaConnectionError("BBB audio SFU did not answer the start request") from exc
             message = json.loads(raw)
             if message.get("id") == "startResponse":
                 if message.get("response") != "accepted": raise MediaConnectionError(message.get("reason", "bbb-webrtc-sfu rejected the audio offer"))
-                await self.pc.setRemoteDescription(RTCSessionDescription(message["sdpAnswer"], "answer"))
+                if offering:
+                    answer = message.get("sdpAnswer")
+                    if not answer:
+                        raise MediaConnectionError("BBB audio response did not contain an SDP answer")
+                    await self.pc.setRemoteDescription(RTCSessionDescription(answer, "answer"))
+                else:
+                    remote_offer = message.get("sdpOffer") or message.get("sdpAnswer")
+                    if not remote_offer:
+                        raise MediaConnectionError("BBB audio response did not contain an SDP offer")
+                    await self.pc.setRemoteDescription(RTCSessionDescription(remote_offer, "offer"))
+                    answer = await self.pc.createAnswer()
+                    await self.pc.setLocalDescription(answer)
+                    await self.ws.send(json.dumps({
+                        "id": "subscriberAnswer", "type": "audio", "role": "sendrecv",
+                        "sdpOffer": self.pc.localDescription.sdp,
+                    }))
             elif message.get("id") == "iceCandidate" and message.get("candidate"):
                 # Needed by BBB installations configured for trickle ICE.
                 await self.pc.addIceCandidate(message["candidate"])
@@ -171,6 +246,10 @@ class _SFUAudioPublisher:
         self._ready = True
         debug_trace("media.sfu_audio_connected", connection_state=self.connection_state, ice_state=self.pc.iceConnectionState)
         self._signal_task = asyncio.create_task(self._listen_for_signals())
+        # BBB's own BaseBroker uses JSON ``{id: 'ping'}`` heartbeats rather
+        # than only WebSocket control-frame pings. Keep that source-defined
+        # signalling lease alive for long-running bots.
+        self._heartbeat_task = asyncio.create_task(self._heartbeat())
 
     async def warmup(self) -> None:
         """Connect a muted full-audio session now for instant later playback."""
@@ -216,10 +295,56 @@ class _SFUAudioPublisher:
             if self._ready:
                 self._schedule_reconnect()
 
+    async def _send_heartbeat(self) -> None:
+        if self.ws is None or self.ws.closed:
+            return
+        await self.ws.send(json.dumps({"id": "ping"}))
+        debug_trace("media.sfu_audio_heartbeat")
+
+    async def _heartbeat(self) -> None:
+        """Mirror BBB BaseBroker's application-level audio heartbeat."""
+        try:
+            # BBB's HTML5 BaseBroker runs every 15 seconds. Send slightly
+            # before that deadline so a quiet long-running publisher cannot be
+            # dropped when a deployment has a strict signalling timeout.
+            while self._ready and not self._stopping:
+                await asyncio.sleep(12)
+                await self._send_heartbeat()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            debug_trace("media.sfu_audio_heartbeat_failed", error=str(exc))
+
     def _schedule_reconnect(self) -> None:
         if self._stopping or self._reconnect_task is not None:
             return
         self._reconnect_task = asyncio.create_task(self._reconnect())
+
+    async def _outbound_audio_stats(self) -> dict[str, int]:
+        """Return WebRTC's sender counters for a live custom-audio track."""
+        if self.pc is None or self._audio_sender is None:
+            return {}
+        report = await self.pc.getStats()
+        for item in report.values():
+            if getattr(item, "type", None) != "outbound-rtp":
+                continue
+            if getattr(item, "kind", None) != "audio":
+                continue
+            return {
+                "packets_sent": int(getattr(item, "packetsSent", 0) or 0),
+                "bytes_sent": int(getattr(item, "bytesSent", 0) or 0),
+            }
+        return {}
+
+    def outbound_audio_stats(self) -> dict[str, int]:
+        """Synchronously read live outbound RTP counters for diagnostics."""
+        if self.pc is None or self.connection_state != "connected":
+            return {}
+        try:
+            return self.submit(self._outbound_audio_stats()).result(timeout=3)
+        except Exception as exc:
+            debug_trace("media.outbound_audio_stats_failed", error=str(exc))
+            return {}
 
     async def _reconnect(self) -> None:
         try:
@@ -239,6 +364,22 @@ class _SFUAudioPublisher:
                     continue
         finally:
             self._reconnect_task = None
+
+    def _swap_warmed_track(self, player: Any, filename: str, loop: bool) -> None:
+        """Replace the warm-up silence source without terminating sender RTP."""
+        if self._audio_sender is None or player.audio is None:
+            raise MediaConnectionError("BBB audio sender or file track is unavailable")
+        self._audio_sender.replaceTrack(player.audio)
+        # Do not call ``stop()`` on the previously attached silence track
+        # here. RTCRtpSender can still be awaiting that track's ``recv``;
+        # stopping it raises MediaStreamError, terminates the sender's RTP
+        # task, and silently leaves the negotiated connection alive with no
+        # outgoing audio. Replacing the track is sufficient; the silent source
+        # owns no background resources and is released on close.
+        self.player, self._silent_track = player, None
+        self._warmed = False
+        self._active_file, self._active_loop = filename, loop
+
     async def play(self, filename: str, loop: bool) -> None:
         """Publish audio and retry transient SFU/ICE failures automatically."""
         if self._ready and self._warmed and self.pc and self._audio_sender:
@@ -246,13 +387,13 @@ class _SFUAudioPublisher:
             player = MediaPlayer(filename, loop=loop)
             if player.audio is None:
                 raise MediaConnectionError("the selected file has no audio stream")
-            self._audio_sender.replaceTrack(player.audio)
-            if self._silent_track is not None:
-                self._silent_track.stop()
-            self.player, self._silent_track = player, None
-            self._warmed = False
-            self._active_file, self._active_loop = filename, loop
-            get_logger().info("Publishing prepared BBB custom audio")
+            self._swap_warmed_track(player, filename, loop)
+            # Give aiortc one paced audio frame before the BBB mute command is
+            # lifted. This mirrors browser AudioBroker's input-stream swap and
+            # avoids deployments dropping the first source frame while the
+            # muted state is being updated.
+            await asyncio.sleep(0.5)
+            get_logger().info("Publishing prepared BBB custom audio source")
             return
         await self.close()
         self._stopping = False
@@ -283,6 +424,11 @@ class _SFUAudioPublisher:
         if task and task is not asyncio.current_task():
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception): await task
+        heartbeat = self._heartbeat_task
+        self._heartbeat_task = None
+        if heartbeat and heartbeat is not asyncio.current_task():
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception): await heartbeat
         if self.ws: await self.ws.close(); self.ws = None
         if self.pc: await self.pc.close(); self.pc = None
         self._audio_sender = None
@@ -701,6 +847,9 @@ class MediaController:
         backend = self._media_backend()
         if backend.get("audioBridge") != "bbb-webrtc-sfu":
             raise MediaConnectionError(f"BBB microphone warm-up is unavailable for audio backend {backend.get('audioBridge')!r}")
+        # This setting is independent from the WebRTC role. Clear a retained
+        # listener preference before attempting to publish a microphone track.
+        self.client.actions.userSetListenOnlyInput(listenOnlyInputDevice=False)
         self._leave_listener()
         if self._sfu is None: self._sfu = _SFUAudioPublisher(self.client.session)
         self._sfu.submit(self._sfu.warmup()).result()
@@ -729,6 +878,7 @@ class MediaController:
                 self._sfu = _SFUAudioPublisher(self.client.session)
                 self._sfu.submit(self._sfu.play(str(path), loop)).result()
             self._mute("audio", False)
+            self._verify_audio_input_state()
             return
         if backend.get("cameraBridge") == "bbb-webrtc-sfu" and kind == "video":
             if self._sfu_video is None: self._sfu_video = _SFUVideoPublisher(self.client)
@@ -744,6 +894,37 @@ class MediaController:
             else: self.client.users.unmute(self.client.session.user_id or "")
         if kind == "video" and backend.get("cameraBridge") == "bbb-webrtc-sfu" and self._sfu_video is not None:
             self._sfu_video.submit(self._sfu_video.set_broadcast(not muted)).result()
+
+    def _verify_audio_input_state(self) -> None:
+        """Log BBB's authoritative post-publish microphone state.
+
+        A connected WebRTC peer alone is not proof that BBB has accepted the
+        sender as a microphone.  Querying the user table makes a retained
+        listener preference visible and automatically retries the two BBB
+        state mutations once before warning the caller.
+        """
+        user_id = self.client.session.user_id
+        if not user_id:
+            return
+        try:
+            user = next((item for item in self.client.users.list() if item.id == user_id), None)
+            if user is None:
+                get_logger().warning("BBB could not verify the custom audio input state for the saved user")
+                return
+            if user.muted or user.listen_only or user.listen_only_input_device:
+                get_logger().warning(
+                    "BBB still reports custom audio as muted/listener; retrying microphone activation "
+                    "(muted=%s, listen_only=%s, listen_only_input=%s)",
+                    user.muted, user.listen_only, user.listen_only_input_device,
+                )
+                self.client.actions.userSetListenOnlyInput(listenOnlyInputDevice=False)
+                self.client.users.unmute(user_id)
+                return
+            get_logger().info("BBB confirmed the custom audio sender is active")
+        except Exception as exc:
+            # Publishing has already succeeded. A verification query is useful
+            # diagnostics, not a reason to discard a working media session.
+            debug_trace("media.audio_input_verify_failed", error=str(exc))
     def _stop(self, kind: str) -> None:
         if self._sfu is not None and kind == "audio": self._sfu.submit(self._sfu.close()).result(); self._sfu = None
         if self._sfu_video is not None and kind == "video": self._sfu_video.submit(self._sfu_video.close()).result(); self._sfu_video = None
@@ -766,6 +947,9 @@ class MediaController:
         return {
             "backend": self._media_backend().get("audioBridge", "unknown"),
             "audio": sfu_state(self._sfu),
+            # Non-zero counters prove that aiortc is clocking file frames onto
+            # the negotiated BBB sender; callers can inspect them directly.
+            "audio_stats": self._sfu.outbound_audio_stats() if self._sfu else {},
             "camera": sfu_state(self._sfu_video),
             "listener": sfu_state(self._listener),
         }
