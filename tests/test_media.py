@@ -130,3 +130,46 @@ class MediaTests(unittest.TestCase):
         publisher.ws = SimpleNamespace(closed=False, send=AsyncMock())
         asyncio.run(publisher._send_heartbeat())
         publisher.ws.send.assert_awaited_once_with('{"id": "ping"}')
+
+    def test_listener_mode_is_restored_after_a_media_reconnect(self) -> None:
+        """The SFU session alone does not restore BBB's listener UI state."""
+        actions = Mock()
+        client = SimpleNamespace(actions=actions, users=Mock(), session=SimpleNamespace(user_id="bot"))
+        media = object.__new__(MediaController)
+        media.client = client
+        media._desired_input_mode = "listener"
+        media._sfu = None
+
+        media._restore_input_mode()
+
+        actions.userSetListenOnlyInput.assert_called_once_with(listenOnlyInputDevice=True)
+        client.users.unmute.assert_not_called()
+
+    def test_active_microphone_mode_is_restored_and_unmuted_after_reconnect(self) -> None:
+        """An active file source must return as a microphone, not a listener."""
+        actions = Mock()
+        users = Mock()
+        client = SimpleNamespace(actions=actions, users=users, session=SimpleNamespace(user_id="bot"))
+        media = object.__new__(MediaController)
+        media.client = client
+        media._desired_input_mode = "microphone"
+        media._sfu = SimpleNamespace(_active_file="warning.mp3")
+
+        media._restore_input_mode()
+
+        actions.userSetListenOnlyInput.assert_called_once_with(listenOnlyInputDevice=False)
+        users.unmute.assert_called_once_with("bot")
+
+    def test_warmed_microphone_stays_muted_after_reconnect(self) -> None:
+        actions = Mock()
+        users = Mock()
+        client = SimpleNamespace(actions=actions, users=users, session=SimpleNamespace(user_id="bot"))
+        media = object.__new__(MediaController)
+        media.client = client
+        media._desired_input_mode = "microphone"
+        media._sfu = SimpleNamespace(_active_file=None)
+
+        media._restore_input_mode()
+
+        actions.userSetListenOnlyInput.assert_called_once_with(listenOnlyInputDevice=False)
+        users.unmute.assert_not_called()

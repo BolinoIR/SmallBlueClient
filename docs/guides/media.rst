@@ -26,6 +26,16 @@ TURN relay and advertises relay candidates only, matching the browser client's
 retry-through-relay path. Re-export a session after updating the extension to
 preserve a deployment override.
 
+Input mode recovery
+~~~~~~~~~~~~~~~~~~~
+
+BBB treats the listener/microphone indicator as participant state separate from
+the WebRTC peer connection. Whenever SBC creates a replacement SFU connection,
+it restores the last selected input mode automatically. A listener reconnect
+reapplies the listener state; an active custom-audio reconnect reapplies
+microphone state and unmutes the sender. A silent, explicit warm-up remains
+muted until audio is actually played.
+
 Legacy SFU fingerprint compatibility
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

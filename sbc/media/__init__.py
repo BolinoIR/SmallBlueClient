@@ -161,6 +161,10 @@ class _SFUAudioPublisher:
         self._audio_sender = None
         self._silent_track = None
         self._warmed = False
+        # Assigned by MediaController.  BBB's GraphQL input-mode setting is
+        # separate from the SFU PeerConnection and must be re-applied whenever
+        # a fresh media connection replaces a dropped one.
+        self.on_connection_ready: Any = None
         # BBB's browser retries failed ICE/DTLS connections through TURN.  A
         # number of managed BBB installations are reachable only that way
         # from corporate networks, VPNs, and CGNAT connections.  Keep the
@@ -375,6 +379,21 @@ class _SFUAudioPublisher:
         # than only WebSocket control-frame pings. Keep that source-defined
         # signalling lease alive for long-running bots.
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
+        self._notify_connection_ready()
+
+    def _notify_connection_ready(self) -> None:
+        """Reapply the BBB input-mode UI state after an SFU reconnection."""
+        callback = self.on_connection_ready
+        if not callable(callback):
+            return
+        # Controllers use synchronous GraphQL mutations. Do not block aiortc's
+        # event loop while BBB acknowledges that UI/state mutation.
+        def restore() -> None:
+            try:
+                callback()
+            except Exception as exc:
+                get_logger().warning("Could not restore BBB media input mode after reconnect: %s", exc)
+        threading.Thread(target=restore, daemon=True, name="sbc-media-mode-restore").start()
 
     async def warmup(self) -> None:
         """Connect a muted full-audio session now for instant later playback."""
@@ -712,6 +731,7 @@ class _SFUListener(_SFUAudioPublisher):
             raise MediaConnectionError(f"BBB listener WebRTC connection failed (state={self.connection_state}, ice={self.pc.iceConnectionState})")
         self._ready = True
         self._signal_task = asyncio.create_task(self._listen_for_signals())
+        self._notify_connection_ready()
 
     async def _reconnect(self) -> None:
         try:
@@ -1048,9 +1068,32 @@ class MediaController:
     """Publish local media files directly to BBB's configured media backend."""
     def __init__(self, client: Any):
         self.client = client; self.audio = _Source(self, "audio"); self.camera = _Source(self, "video"); self.listener = _ListenerSource(self); self.microphone = _MicrophoneSource(self); self._instance: _LiveKitPublisher | None = None; self._sfu: _SFUAudioPublisher | None = None; self._sfu_video: _SFUVideoPublisher | None = None; self._listener: _SFUListener | None = None; self._backend: dict[str, Any] | None = None
+        self._desired_input_mode: str | None = None
         self._audio_observation: tuple[float, int, int] | None = None
         self._timers: list[threading.Timer] = []
         self.playlist = AudioPlaylist(self)
+
+    def set_input_mode(self, mode: str) -> None:
+        """Remember the last BBB audio-input mode for media reconnections."""
+        if mode not in {"listener", "microphone"}:
+            raise ValueError("BBB input mode must be 'listener' or 'microphone'")
+        self._desired_input_mode = mode
+
+    def _restore_input_mode(self) -> None:
+        """Restore the GraphQL participant mode after a new SFU connection."""
+        mode = self._desired_input_mode
+        if mode == "listener":
+            get_logger().info("Restoring BBB listener mode after media reconnect")
+            self.client.actions.userSetListenOnlyInput(listenOnlyInputDevice=True)
+            return
+        if mode == "microphone":
+            get_logger().info("Restoring BBB microphone mode after media reconnect")
+            self.client.actions.userSetListenOnlyInput(listenOnlyInputDevice=False)
+            # A file publisher needs to resume the exact unmuted state users
+            # expect after the SFU peer is recreated. Warmed silent audio stays
+            # muted until a clip is explicitly attached.
+            if self._sfu is not None and self._sfu._active_file:
+                self.client.users.unmute(self.client.session.user_id or "")
     def _publisher(self) -> _LiveKitPublisher:
         if self._instance is None: self._instance = _LiveKitPublisher()
         return self._instance
@@ -1097,7 +1140,10 @@ class MediaController:
         backend = self._media_backend()
         if backend.get("audioBridge") != "bbb-webrtc-sfu":
             raise MediaConnectionError(f"BBB listener sessions are unavailable for audio backend {backend.get('audioBridge')!r}")
-        if self._listener is None: self._listener = _SFUListener(self.client.session)
+        self.set_input_mode("listener")
+        if self._listener is None:
+            self._listener = _SFUListener(self.client.session)
+            self._listener.on_connection_ready = self._restore_input_mode
         self._listener.submit(self._listener.join()).result()
     def _leave_listener(self) -> None:
         if self._listener is not None:
@@ -1109,9 +1155,12 @@ class MediaController:
             raise MediaConnectionError(f"BBB microphone warm-up is unavailable for audio backend {backend.get('audioBridge')!r}")
         # This setting is independent from the WebRTC role. Clear a retained
         # listener preference before attempting to publish a microphone track.
+        self.set_input_mode("microphone")
         self.client.actions.userSetListenOnlyInput(listenOnlyInputDevice=False)
         self._leave_listener()
-        if self._sfu is None: self._sfu = _SFUAudioPublisher(self.client.session)
+        if self._sfu is None:
+            self._sfu = _SFUAudioPublisher(self.client.session)
+            self._sfu.on_connection_ready = self._restore_input_mode
         self._sfu.submit(self._sfu.warmup()).result()
         # The connection is real full audio, but its silent source must remain
         # muted until a script explicitly plays audio.
@@ -1126,7 +1175,10 @@ class MediaController:
             # BBB allows one audio role per identity. Replace recv-only with
             # the file publisher before broadcasting the warning clip.
             self._leave_listener()
-            if self._sfu is None: self._sfu = _SFUAudioPublisher(self.client.session)
+            self.set_input_mode("microphone")
+            if self._sfu is None:
+                self._sfu = _SFUAudioPublisher(self.client.session)
+                self._sfu.on_connection_ready = self._restore_input_mode
             try:
                 self._sfu.submit(self._sfu.play(str(path), loop, gain_db=gain_db, fade_in=fade_in)).result()
             except MediaConnectionError:
@@ -1137,6 +1189,7 @@ class MediaController:
                 self.client.ensure_joined(force=True)
                 self._sfu.submit(self._sfu.close()).result()
                 self._sfu = _SFUAudioPublisher(self.client.session)
+                self._sfu.on_connection_ready = self._restore_input_mode
                 self._sfu.submit(self._sfu.play(str(path), loop, gain_db=gain_db, fade_in=fade_in)).result()
             self._mute("audio", False)
             self._verify_audio_input_state()

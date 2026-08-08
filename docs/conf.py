@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT))
 
 project = "SmallBlueClient"
 author = "SmallBlueClient community"
-release = "0.2.3"
+release = "0.2.4"
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",

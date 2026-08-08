@@ -535,6 +535,7 @@ class SBCClient(EventEmitter):
         """
         try:
             get_logger().info("Setting newly joined BBB user to listener mode")
+            self.media.set_input_mode("listener")
             self.actions.userSetListenOnlyInput(listenOnlyInputDevice=True)
             self.media.listener.join()
         except Exception as exc:
@@ -553,6 +554,7 @@ class SBCClient(EventEmitter):
         """
         try:
             get_logger().info("Selecting BBB full-audio mode (idle microphone warm-up is disabled)")
+            self.media.set_input_mode("microphone")
             # A session may previously have been listener-only. BBB keeps this
             # client setting across reconnections; clear it before warming the
             # sendrecv SFU stream or the server can accept WebRTC while still

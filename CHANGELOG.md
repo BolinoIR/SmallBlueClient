@@ -1,5 +1,15 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.2.4 — Audio-mode recovery after reconnects
+
+- Restored the saved BBB participant input mode after an SFU media reconnect.
+  Listener sessions now reapply BBB's listener state, and active custom-audio
+  sessions reapply microphone state before resuming their sender.
+- Preserved mute state for an optional silent microphone warm-up while
+  restoring an active file publisher as unmuted.
+- Added regression coverage for listener, active-microphone, and muted
+  warm-up recovery paths.
+
 ## 0.2.3 — Long-running meeting liveness
 
 - Added HTML5-source-compatible ``/bigbluebutton/rtt-check`` and
