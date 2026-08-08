@@ -61,6 +61,17 @@ Async bot
 Use the repository's ``examples/`` directory for ready-to-run files covering
 media, typed controllers, schema events, moderation, and event patterns.
 
+Dynamic visual screenshare
+--------------------------
+
+``dynamic_screenshare.py`` starts a generic mutable text board. It has no bot
+logic: any application can change the board while the same BBB screen stream
+stays connected.
+
+.. code-block:: bash
+
+   python examples/dynamic_screenshare.py
+
 Capability diagnostic
 ---------------------
 

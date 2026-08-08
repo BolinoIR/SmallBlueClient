@@ -14,8 +14,8 @@ from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 
 from .events import EventEmitter
-from .graphql import (CHAT_MESSAGES, CHAT_SEND, CHATS, CURRENT_USER, CURRENT_USER_STATE, MEETING, MEETING_END, MEETING_SET_MUTED,
-                      PRESENTATION, PRESENTATION_SET_PAGE, USER_EJECT, USER_SET_MUTED, USERS,
+from .graphql import (CHAT_MESSAGES, CHATS, CURRENT_USER, CURRENT_USER_STATE, MEETING,
+                      PRESENTATION, USERS,
                       USER_JOIN_MEETING, VOICE_ACTIVITY, POLL_RESULTS, TIMER, MEETING_STATE,
                       PRESENTATIONS, PRESENTATION_UPLOAD_TOKEN, BREAKOUT_LIFECYCLE, GraphQLClient)
 from .exceptions import ConnectionError, GraphQLError, SessionError

@@ -15,6 +15,7 @@ signatures for all embedded action methods through `sbc/operations/__init__.pyi`
 | `client.guests` | `list()` | `policy`, `approve`, `deny`, `lobby_message` |
 | `client.captions` | `transcript()` | `submit`, `submit_transcript`, `speech_locale` |
 | `client.whiteboards` | `current()` | `submit`, `delete`, `clear`, `cursor` |
+| `client.screenshare` | `current()`, `surface()`, `textboard()` | `start`, `play`, `image`, `stop`, `set_as_content` |
 
 ## Events
 

@@ -1,8 +1,6 @@
 import json
 import tempfile
 import unittest
-from pathlib import Path
-from urllib.parse import urlparse, parse_qs
 from urllib.request import Request, urlopen
 
 from sbc.bridge import SessionBridge

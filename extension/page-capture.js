@@ -81,6 +81,10 @@
       listen_only_offering: media.listenOnlyOffering ?? false,
       transparent_listen_only: media.transparentListenOnly ?? true,
       camera_media_server: kurento.videoMediaServer ?? null,
+      // ScreenshareBroker uses these source-defined kurento.screenshare
+      // fields for a send-only ``type: screenshare`` SFU session.
+      screenshare_media_server: kurento.screenshare?.mediaServer ?? null,
+      screenshare_bitrate: kurento.screenshare?.bitrate ?? 1500,
       signal_candidates: kurento.signalCandidates ?? false,
       // BBB's HTML5 initial settings use five seconds when no deployment
       // override is supplied.
@@ -119,6 +123,7 @@
           join_error_message: state.currentUser.joinErrorMessage || null,
         } : {},
         bbb_webrtc_sfu: bbbWebrtcSfuSnapshot(),
+        ...(state.meeting.screenShareBridge ? { screenshare_backend: state.meeting.screenShareBridge } : {}),
         ...(state.livekit.token ? { livekit: clone(state.livekit) } : {}),
       },
       headers: {},
@@ -140,6 +145,9 @@
         name: typeof value.meetingName === "string" && value.meetingName.trim()
           ? value.meetingName.trim()
           : state.meeting.name,
+        screenShareBridge: typeof value.screenShareBridge === "string"
+          ? value.screenShareBridge
+          : state.meeting.screenShareBridge,
       };
     }
     if (typeof value.livekitToken === "string") state.livekit = { token: value.livekitToken, url: value.livekitUrl || `wss://${location.host}/livekit` };

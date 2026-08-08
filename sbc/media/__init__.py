@@ -19,8 +19,10 @@ from urllib.request import Request, urlopen
 
 from ..core.exceptions import ConnectionError, MediaStalledError
 from ..core.logging import debug_trace, get_logger
+from .visuals import TextBoard as TextBoard, VisualSurface
 
-LIVEKIT_CREDENTIALS = "subscription SBCLiveKitCredentials{user_current{userId livekit{livekitToken} meeting{audioBridge cameraBridge}}}"
+LIVEKIT_CREDENTIALS = "subscription SBCLiveKitCredentials{user_current{userId livekit{livekitToken} meeting{audioBridge cameraBridge screenShareBridge}}}"
+SCREENSHARE_CONTEXT = "query SBCScreenshareContext{meeting{meetingId screenShareBridge voiceSettings{voiceConf}}}"
 
 
 def _enable_bbb_legacy_sha1_fingerprint() -> None:
@@ -755,6 +757,235 @@ class _SFUListener(_SFUAudioPublisher):
         await super().close()
 
 
+class _DynamicVisualTrack:
+    """Turn a mutable :class:`VisualSurface` into a paced aiortc video track."""
+
+    @staticmethod
+    def create(surface: VisualSurface):
+        from aiortc import MediaStreamTrack
+        from aiortc.mediastreams import MediaStreamError
+        from av import VideoFrame
+
+        class DynamicVisualTrack(MediaStreamTrack):
+            kind = "video"
+
+            def __init__(self) -> None:
+                super().__init__()
+                self._timestamp: int | None = None
+                self._started: float | None = None
+
+            async def recv(self):
+                if self.readyState != "live":
+                    raise MediaStreamError
+                clock_rate = 90_000
+                step = max(1, int(clock_rate / surface.frame_rate))
+                loop = asyncio.get_running_loop()
+                if self._timestamp is None:
+                    self._timestamp, self._started = 0, loop.time()
+                else:
+                    self._timestamp += step
+                    await asyncio.sleep(max(0, self._started + self._timestamp / clock_rate - loop.time()))
+                # The surface lock is released before converting the image, so
+                # command handlers can update text/graphics while aiortc sends
+                # the previous frame.
+                image = surface.render()
+                frame = VideoFrame.from_ndarray(image.toarray() if hasattr(image, "toarray") else __import__("numpy").asarray(image), format="rgba")
+                frame.pts = self._timestamp
+                frame.time_base = Fraction(1, clock_rate)
+                return frame
+
+        return DynamicVisualTrack()
+
+
+class _SFUScreensharePublisher(_SFUAudioPublisher):
+    """Source-matched ``screenshare`` presenter for BBB's WebRTC SFU.
+
+    BBB's HTML5 ``ScreenshareBroker`` sends a different contract from webcam
+    publishing: ``type=screenshare``, ``role=send``, and the meeting's voice
+    bridge are required.  This publisher implements that contract while its
+    source track reads a mutable :class:`VisualSurface`.
+    """
+
+    def __init__(self, client: Any, source: VisualSurface | str | Path, context: dict[str, Any], *, loop: bool = True) -> None:
+        super().__init__(client.session)
+        self.client = client
+        self.surface = source if isinstance(source, VisualSurface) else None
+        self.source_path = None if isinstance(source, VisualSurface) else Path(source)
+        self.source_loop = loop
+        self.context = context
+        self._screen_track: Any | None = None
+        self._sharing_active = False
+
+    def _start_request(self, sdp_offer: str) -> dict[str, Any]:
+        message: dict[str, Any] = {
+            "id": "start",
+            "type": "screenshare",
+            "role": "send",
+            "internalMeetingId": self.context["meeting_id"],
+            "voiceBridge": self.context["voice_bridge"],
+            "userName": self.context["user_name"],
+            "callerName": self.context["user_id"],
+            "sdpOffer": sdp_offer,
+            "hasAudio": False,
+            "contentType": "screenshare",
+            "bitrate": self.context["bitrate"],
+        }
+        media_server = self.context.get("media_server")
+        if media_server:
+            message["mediaServer"] = media_server
+        return message
+
+    async def start(self) -> None:
+        """Open a source-defined BBB screenshare presenter connection."""
+        await self.close()
+        self._stopping = False
+        self._sharing_active = True
+        last_error: Exception | None = None
+        for attempt in range(3):
+            force_relay = attempt > 0
+            try:
+                route = " via TURN relay" if force_relay else ""
+                get_logger().info("Starting BBB visual screenshare (attempt %s/3)%s", attempt + 1, route)
+                await self._connect_screenshare(force_relay=force_relay)
+                get_logger().info("BBB visual screenshare is publishing")
+                return
+            except Exception as exc:
+                last_error = exc
+                get_logger().warning("BBB visual screenshare attempt %s failed: %s", attempt + 1, exc)
+                await self._dispose()
+                if attempt < 2:
+                    await asyncio.sleep((1.0, 3.0)[attempt])
+        self._stopping = True
+        self._sharing_active = False
+        raise MediaConnectionError(f"could not establish BBB visual screenshare: {last_error}") from last_error
+
+    async def _connect_screenshare(self, *, force_relay: bool) -> None:
+        from aiortc import RTCPeerConnection, RTCSessionDescription
+        import websockets
+
+        _enable_bbb_legacy_sha1_fingerprint()
+        self.pc = RTCPeerConnection(self._ice_configuration(force_relay=force_relay))
+        if self.surface is not None:
+            if self._screen_track is None or self._screen_track.readyState != "live":
+                self._screen_track = _DynamicVisualTrack.create(self.surface)
+        else:
+            from aiortc.contrib.media import MediaPlayer
+
+            # File tracks are tied to their decoder/player. Recreate both for
+            # every fresh peer connection so an SFU reconnect starts a valid
+            # new source rather than reusing a stopped RTP track.
+            self.player = MediaPlayer(str(self.source_path), loop=self.source_loop)
+            self._screen_track = self.player.video
+            if self._screen_track is None:
+                raise MediaConnectionError("the selected screenshare media has no video stream")
+        self.pc.addTrack(self._screen_track)
+        connected = asyncio.Event()
+
+        @self.pc.on("connectionstatechange")
+        def on_connection_state_change() -> None:
+            self.connection_state = self.pc.connectionState
+            get_logger().info(
+                "BBB visual screenshare connection state: %s (ICE %s)",
+                self.connection_state,
+                self.pc.iceConnectionState,
+            )
+            if self.connection_state in ("connected", "failed", "closed"):
+                connected.set()
+            if self._ready and self.connection_state in ("failed", "closed"):
+                self._schedule_reconnect()
+
+        offer = await self.pc.createOffer()
+        await self.pc.setLocalDescription(offer)
+        while self.pc.iceGatheringState != "complete":
+            await asyncio.sleep(0.05)
+        headers = [(key, value) for key, value in self.session.headers.items() if value]
+        self.ws = await websockets.connect(self._url(), extra_headers=headers, ping_interval=15, ping_timeout=20)
+        await self.ws.send(json.dumps(self._start_request(
+            self._outgoing_sdp(self.pc.localDescription.sdp, force_relay=force_relay),
+        )))
+        play_started = False
+        while not play_started:
+            try:
+                raw = await asyncio.wait_for(self.ws.recv(), timeout=25)
+            except TimeoutError as exc:
+                raise MediaConnectionError("BBB screenshare SFU did not answer the start request") from exc
+            message = json.loads(raw)
+            signal = message.get("id")
+            if signal == "startResponse":
+                if message.get("response") != "accepted":
+                    raise MediaConnectionError(message.get("reason", "bbb-webrtc-sfu rejected the screenshare offer"))
+                answer = message.get("sdpAnswer")
+                if not answer:
+                    raise MediaConnectionError("BBB screenshare response did not contain an SDP answer")
+                await self.pc.setRemoteDescription(RTCSessionDescription(answer, "answer"))
+            elif signal == "iceCandidate" and message.get("candidate"):
+                await self.pc.addIceCandidate(message["candidate"])
+            elif signal == "playStart":
+                play_started = True
+            elif signal in ("error", "stopSharing"):
+                raise MediaConnectionError(message.get("reason", "bbb-webrtc-sfu screenshare stopped"))
+        try:
+            await asyncio.wait_for(connected.wait(), timeout=20)
+        except TimeoutError as exc:
+            raise MediaConnectionError("BBB screenshare was accepted but WebRTC did not connect within 20 seconds") from exc
+        if self.connection_state != "connected":
+            raise MediaConnectionError(
+                f"bbb-webrtc-sfu screenshare connection failed "
+                f"(state={self.connection_state}, ice={self.pc.iceConnectionState})"
+            )
+        self._ready = True
+        self._active_force_relay = force_relay
+        self._signal_task = asyncio.create_task(self._listen_for_screenshare_signals())
+        self._heartbeat_task = asyncio.create_task(self._heartbeat())
+
+    async def _listen_for_screenshare_signals(self) -> None:
+        try:
+            assert self.ws is not None
+            async for raw in self.ws:
+                message = json.loads(raw)
+                signal = message.get("id")
+                if signal == "iceCandidate" and message.get("candidate") and self.pc:
+                    await self.pc.addIceCandidate(message["candidate"])
+                elif signal == "stopSharing":
+                    get_logger().info("BBB stopped the visual screenshare")
+                    self._sharing_active = False
+                    self._stopping = True
+                    return
+                elif signal == "error":
+                    raise MediaConnectionError(message.get("reason", "bbb-webrtc-sfu screenshare error"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            get_logger().warning("BBB visual screenshare signalling ended: %s", exc)
+        finally:
+            if self._ready and self._sharing_active:
+                self._schedule_reconnect()
+
+    async def _reconnect(self) -> None:
+        try:
+            for delay in (1.0, 2.0, 5.0):
+                get_logger().warning("BBB visual screenshare disconnected; retrying in %.0fs", delay)
+                await self._dispose()
+                if self._stopping or not self._sharing_active:
+                    return
+                await asyncio.sleep(delay)
+                try:
+                    await self._connect_screenshare(force_relay=self._active_force_relay)
+                    get_logger().info("BBB visual screenshare reconnected")
+                    return
+                except Exception:
+                    continue
+        finally:
+            self._reconnect_task = None
+
+    async def close(self) -> None:
+        self._sharing_active = False
+        await super().close()
+        if self._screen_track is not None:
+            self._screen_track.stop()
+            self._screen_track = None
+
+
 class _SFUVideoPublisher(_SFUAudioPublisher):
     """BBB 3.0.32 VideoProvider publisher for ``bbb-webrtc-sfu`` cameras."""
     def __init__(self, client: Any):
@@ -821,7 +1052,6 @@ class _SFUVideoPublisher(_SFUAudioPublisher):
 
     async def set_broadcast(self, enabled: bool) -> None:
         if not self.camera_id: return
-        name = "cameraBroadcastStart" if enabled else "cameraBroadcastStop"
         if enabled:
             query = "mutation CameraBroadcastStart($cameraId:String!,$contentType:String!){cameraBroadcastStart(stream:$cameraId,contentType:$contentType)}"; variables = {"cameraId": self.camera_id, "contentType": "camera"}
         else:
@@ -895,6 +1125,46 @@ class _LiveKitPublisher:
             publication = await self.room.local_participant.publish_track(track, options)
             task = asyncio.create_task(self._pump_video(Path(filename), source, loop, frame_rate, av, rtc))
         self.sources[kind], self.tracks[kind], self.publications[kind], self.tasks[kind] = source, track, publication, task
+
+    async def share_surface(self, surface: VisualSurface, url: str, token: str) -> None:
+        """Publish a mutable SBC visual surface as a LiveKit screenshare."""
+        from livekit import rtc
+
+        await self._connect(url, token)
+        kind = "screenshare"
+        await self._clear(kind)
+        source = rtc.VideoSource(surface.width, surface.height)
+        track = rtc.LocalVideoTrack.create_video_track("sbc-visual-screenshare", source)
+        options = rtc.TrackPublishOptions()
+        options.source = rtc.TrackSource.SOURCE_SCREENSHARE
+        publication = await self.room.local_participant.publish_track(track, options)
+        task = asyncio.create_task(self._pump_surface(surface, source, rtc))
+        self.sources[kind], self.tracks[kind], self.publications[kind], self.tasks[kind] = source, track, publication, task
+
+    async def share_file(self, filename: str, loop: bool, frame_rate: int, url: str, token: str) -> None:
+        """Publish a local video file using LiveKit's screenshare track source."""
+        from livekit import rtc
+        import av
+
+        await self._connect(url, token)
+        kind = "screenshare"
+        await self._clear(kind)
+        source = rtc.VideoSource(1280, 720)
+        track = rtc.LocalVideoTrack.create_video_track("sbc-media-screenshare", source)
+        options = rtc.TrackPublishOptions()
+        options.source = rtc.TrackSource.SOURCE_SCREENSHARE
+        publication = await self.room.local_participant.publish_track(track, options)
+        task = asyncio.create_task(self._pump_video(Path(filename), source, loop, frame_rate, av, rtc))
+        self.sources[kind], self.tracks[kind], self.publications[kind], self.tasks[kind] = source, track, publication, task
+
+    async def _pump_surface(self, surface: VisualSurface, source: Any, rtc: Any) -> None:
+        import numpy as np
+
+        while True:
+            image = surface.render()
+            rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8)
+            source.capture_frame(rtc.VideoFrame(surface.width, surface.height, rtc.VideoBufferType.RGBA, rgba.tobytes()))
+            await asyncio.sleep(1 / surface.frame_rate)
 
     async def _pump_audio(self, filename: Path, source: Any, loop: bool, av: Any) -> None:
         from livekit import rtc
@@ -1064,10 +1334,31 @@ class _MicrophoneSource:
     def leave(self) -> None: self.media.audio.stop()
 
 
+class _ScreenshareSource:
+    """Media-facing handle for a mutable visual screenshare."""
+
+    def __init__(self, media: "MediaController") -> None:
+        self.media = media
+
+    def start(self, surface: VisualSurface) -> None:
+        self.media._start_screenshare(surface)
+
+    def play(self, file: str | Path, *, loop: bool = True, frame_rate: int = 15) -> None:
+        """Publish a local video file as BBB screenshare media."""
+        self.media._play_screenshare_file(Path(file), loop=loop, frame_rate=frame_rate)
+
+    def stop(self) -> None:
+        self.media._stop_screenshare()
+
+    @property
+    def active(self) -> bool:
+        return self.media._screenshare_active()
+
+
 class MediaController:
     """Publish local media files directly to BBB's configured media backend."""
     def __init__(self, client: Any):
-        self.client = client; self.audio = _Source(self, "audio"); self.camera = _Source(self, "video"); self.listener = _ListenerSource(self); self.microphone = _MicrophoneSource(self); self._instance: _LiveKitPublisher | None = None; self._sfu: _SFUAudioPublisher | None = None; self._sfu_video: _SFUVideoPublisher | None = None; self._listener: _SFUListener | None = None; self._backend: dict[str, Any] | None = None
+        self.client = client; self.audio = _Source(self, "audio"); self.camera = _Source(self, "video"); self.listener = _ListenerSource(self); self.microphone = _MicrophoneSource(self); self.screenshare = _ScreenshareSource(self); self._instance: _LiveKitPublisher | None = None; self._sfu: _SFUAudioPublisher | None = None; self._sfu_video: _SFUVideoPublisher | None = None; self._sfu_screenshare: _SFUScreensharePublisher | None = None; self._listener: _SFUListener | None = None; self._backend: dict[str, Any] | None = None
         self._desired_input_mode: str | None = None
         self._audio_observation: tuple[float, int, int] | None = None
         self._timers: list[threading.Timer] = []
@@ -1130,6 +1421,92 @@ class MediaController:
             self._backend = {"livekit_token": (current.get("livekit") or {}).get("livekitToken"), **(current.get("meeting") or {})}
             debug_trace("media.backend_detected", audio_backend=self._backend.get("audioBridge"), camera_backend=self._backend.get("cameraBridge"), livekit=bool(self._backend.get("livekit_token")))
         return self._backend
+
+    def _screenshare_context(self) -> dict[str, Any]:
+        """Read the BBB fields used by HTML5's ``ScreenshareBroker``."""
+        data = self.client.graphql.execute(SCREENSHARE_CONTEXT)
+        meeting_rows = data.get("meeting") or []
+        meeting = meeting_rows[0] if isinstance(meeting_rows, list) and meeting_rows else meeting_rows
+        if not isinstance(meeting, dict):
+            meeting = {}
+        meeting_id = meeting.get("meetingId") or self.client.session.meeting_id
+        voice_bridge = (meeting.get("voiceSettings") or {}).get("voiceConf")
+        user_id = self.client.session.user_id
+        if not meeting_id:
+            raise MediaConnectionError("BBB did not expose the internal meeting id required for screenshare")
+        if not voice_bridge:
+            raise MediaConnectionError("BBB did not expose the voice bridge required for screenshare")
+        if not user_id:
+            raise MediaConnectionError("the SBC session does not contain a BBB user id for screenshare")
+        settings = self.client.session.snapshot.get("bbb_webrtc_sfu") or {}
+        return {
+            "meeting_id": meeting_id,
+            "voice_bridge": voice_bridge,
+            "bridge": meeting.get("screenShareBridge"),
+            "user_id": user_id,
+            "user_name": self.client.session.user_name or user_id,
+            "bitrate": int(settings.get("screenshare_bitrate", 1500)),
+            "media_server": settings.get("screenshare_media_server"),
+        }
+
+    def _start_screenshare(self, surface: VisualSurface) -> None:
+        if not isinstance(surface, VisualSurface):
+            raise TypeError("screenshare.start() requires a VisualSurface or TextBoard")
+        backend = self._media_backend()
+        configured = str(self.client.session.snapshot.get("screenshare_backend", "")).lower()
+        use_livekit = configured == "livekit" or (
+            not configured
+            and backend.get("screenShareBridge") == "livekit"
+            and bool(backend.get("livekit_token"))
+        )
+        if use_livekit:
+            url, token = self._credentials()
+            get_logger().info("Starting LiveKit visual screenshare (%sx%s @ %sfps)", surface.width, surface.height, surface.frame_rate)
+            self._publisher().submit(self._publisher().share_surface(surface, url, token)).result()
+            return
+        context = self._screenshare_context()
+        if context.get("bridge") == "livekit":
+            raise MediaConnectionError("BBB selected LiveKit screenshare but did not expose a LiveKit media token")
+        if self._sfu_screenshare is not None:
+            self._sfu_screenshare.submit(self._sfu_screenshare.close()).result()
+        self._sfu_screenshare = _SFUScreensharePublisher(self.client, surface, context)
+        self._sfu_screenshare.submit(self._sfu_screenshare.start()).result()
+
+    def _play_screenshare_file(self, path: Path, *, loop: bool, frame_rate: int) -> None:
+        path = self._prepare("video", path)
+        backend = self._media_backend()
+        configured = str(self.client.session.snapshot.get("screenshare_backend", "")).lower()
+        use_livekit = configured == "livekit" or (
+            not configured
+            and backend.get("screenShareBridge") == "livekit"
+            and bool(backend.get("livekit_token"))
+        )
+        if use_livekit:
+            url, token = self._credentials()
+            get_logger().info("Starting LiveKit media screenshare: %s", path.name)
+            self._publisher().submit(
+                self._publisher().share_file(str(path), loop, frame_rate, url, token),
+            ).result()
+            return
+        context = self._screenshare_context()
+        if context.get("bridge") == "livekit":
+            raise MediaConnectionError("BBB selected LiveKit screenshare but did not expose a LiveKit media token")
+        if self._sfu_screenshare is not None:
+            self._sfu_screenshare.submit(self._sfu_screenshare.close()).result()
+        self._sfu_screenshare = _SFUScreensharePublisher(self.client, path, context, loop=loop)
+        self._sfu_screenshare.submit(self._sfu_screenshare.start()).result()
+
+    def _stop_screenshare(self) -> None:
+        if self._instance is not None:
+            self._instance.submit(self._instance._clear("screenshare")).result()
+        if self._sfu_screenshare is not None:
+            self._sfu_screenshare.submit(self._sfu_screenshare.close()).result()
+            self._sfu_screenshare = None
+
+    def _screenshare_active(self) -> bool:
+        if self._sfu_screenshare is not None:
+            return bool(self._sfu_screenshare._ready and self._sfu_screenshare._sharing_active)
+        return bool(self._instance is not None and "screenshare" in self._instance.publications)
     def _prepare(self, kind: str, path: Path) -> Path:
         import av
         with av.open(str(path)) as container:
@@ -1266,6 +1643,7 @@ class MediaController:
             "audio_stats": self._sfu.outbound_audio_stats() if self._sfu else {},
             "camera": sfu_state(self._sfu_video),
             "listener": sfu_state(self._listener),
+            "screenshare": sfu_state(self._sfu_screenshare),
         }
     def audio_health(self, *, stall_after: float = 20.0, recover: bool = True) -> MediaHealth:
         """Check that a connected looping SFU source is actually emitting RTP.
@@ -1301,6 +1679,7 @@ class MediaController:
         self.playlist.close()
         for timer in self._timers: timer.cancel()
         self._timers.clear()
+        self._stop_screenshare()
         if self._instance is not None: self._instance.submit(self._instance.close()).result(); self._instance = None
         if self._sfu is not None: self._sfu.submit(self._sfu.close()).result(); self._sfu = None
         if self._sfu_video is not None: self._sfu_video.submit(self._sfu_video.close()).result(); self._sfu_video = None

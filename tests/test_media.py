@@ -9,9 +9,12 @@ from unittest.mock import AsyncMock, Mock
 from sbc.media import (
     MediaController,
     _SFUAudioPublisher,
+    _SFUScreensharePublisher,
+    _DynamicVisualTrack,
     _SilenceAudioTrack,
     _enable_bbb_legacy_sha1_fingerprint,
 )
+from sbc.media.visuals import TextBoard, VisualSurface
 
 
 class MediaTests(unittest.TestCase):
@@ -90,10 +93,11 @@ class MediaTests(unittest.TestCase):
         media._backend = {"audioBridge": "bbb-webrtc-sfu"}
         media._sfu = None
         media._sfu_video = None
+        media._sfu_screenshare = None
         media._listener = None
         self.assertEqual(media.status(), {
             "backend": "bbb-webrtc-sfu", "audio": "stopped", "audio_stats": {},
-            "camera": "stopped", "listener": "stopped",
+            "camera": "stopped", "listener": "stopped", "screenshare": "stopped",
         })
 
     def test_warm_track_swap_does_not_stop_the_track_an_rtp_sender_may_still_be_reading(self) -> None:
@@ -130,6 +134,69 @@ class MediaTests(unittest.TestCase):
         publisher.ws = SimpleNamespace(closed=False, send=AsyncMock())
         asyncio.run(publisher._send_heartbeat())
         publisher.ws.send.assert_awaited_once_with('{"id": "ping"}')
+
+    def test_text_board_changes_are_rendered_without_replacing_the_surface(self) -> None:
+        board = TextBoard("Waiting", title="Status", width=640, height=360)
+        first_revision = board.revision
+        first = board.render()
+        board.set_text("Round two").append("Go!")
+        second = board.render()
+
+        self.assertEqual(first.size, (640, 360))
+        self.assertEqual(second.size, (640, 360))
+        self.assertGreater(board.revision, first_revision)
+        self.assertEqual(board.text, "Round two\nGo!")
+
+    def test_text_board_adapts_persian_rtl_text_and_font_fallback(self) -> None:
+        board = TextBoard("سلام دنیا", title="وضعیت جلسه", width=640, height=360, direction="auto", language="fa")
+        image = board.render()
+        self.assertEqual(board.direction, "auto")
+        self.assertEqual(image.size, (640, 360))
+        with self.assertRaises(ValueError):
+            board.set_direction("sideways")
+
+    def test_generic_visual_surface_supports_imperative_painting(self) -> None:
+        surface = VisualSurface(320, 180, background="#000000")
+        surface.paint(lambda image, draw: draw.rectangle((0, 0, 20, 20), fill="#ff0000"))
+        image = surface.render()
+        self.assertEqual(image.size, (320, 180))
+        self.assertEqual(image.getpixel((10, 10))[:3], (255, 0, 0))
+
+    def test_dynamic_visual_track_emits_a_paced_rgba_video_frame(self) -> None:
+        async def receive_one():
+            track = _DynamicVisualTrack.create(VisualSurface(160, 90, frame_rate=30))
+            try:
+                return await track.recv()
+            finally:
+                track.stop()
+
+        frame = asyncio.run(receive_one())
+        self.assertEqual((frame.width, frame.height), (160, 90))
+
+    def test_screenshare_start_request_matches_bbb_screenshare_broker(self) -> None:
+        publisher = object.__new__(_SFUScreensharePublisher)
+        publisher.context = {
+            "meeting_id": "internal-meeting",
+            "voice_bridge": "voice-conf",
+            "user_id": "user-1",
+            "user_name": "SBC User",
+            "bitrate": 1500,
+            "media_server": "mediasoup",
+        }
+        self.assertEqual(publisher._start_request("v=0\r\n"), {
+            "id": "start",
+            "type": "screenshare",
+            "role": "send",
+            "internalMeetingId": "internal-meeting",
+            "voiceBridge": "voice-conf",
+            "userName": "SBC User",
+            "callerName": "user-1",
+            "sdpOffer": "v=0\r\n",
+            "hasAudio": False,
+            "contentType": "screenshare",
+            "bitrate": 1500,
+            "mediaServer": "mediasoup",
+        })
 
     def test_listener_mode_is_restored_after_a_media_reconnect(self) -> None:
         """The SFU session alone does not restore BBB's listener UI state."""

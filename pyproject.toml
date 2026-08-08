@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "SmallBlueClient"
-version = "0.2.4"
+version = "0.3.0"
 description = "Community BigBlueButton automation client"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{name = "SmallBlueClient community"}]
-dependencies = ["websocket-client>=1.7", "livekit>=1.1,<2", "av>=14,<18", "aiortc>=1.15,<2", "websockets>=13,<14"]
+dependencies = ["websocket-client>=1.7", "livekit>=1.1,<2", "av>=14,<18", "aiortc>=1.15,<2", "websockets>=13,<14", "Pillow>=10,<12", "arabic-reshaper>=3,<4", "python-bidi>=0.6,<1"]
 
 [project.optional-dependencies]
 docs = ["sphinx>=8,<9", "furo>=2024.8.6", "myst-parser>=4,<5", "linkify-it-py>=2,<3"]

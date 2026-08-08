@@ -7,6 +7,9 @@ SBC uses named, typed controllers instead of raw GraphQL strings.
 
    client.reactions.set(sbc.Reaction.RAISE_HAND)
    client.screenshare.set_as_content(True)
+   board = client.screenshare.textboard("Ready", title="Status")
+   client.screenshare.start(board)
+   board.set_text("Updated without restarting the share")
    messages = client.chat.public_history()
    private_messages = client.chat.private_history()
    client.chat.delete(messages[0].chat_id, messages[0].id)

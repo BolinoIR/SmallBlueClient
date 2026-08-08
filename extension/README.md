@@ -5,6 +5,12 @@ passively observes the active BigBlueButton page's real GraphQL WebSocket
 connection, captures the authenticated connection payload and browser cookies,
 and exports a portable `.sbc` file for the Python library.
 
+## Version 1.0.7
+
+Exports now include the BBB screenshare bridge plus the source-defined SFU
+screenshare media-server and bitrate settings. This allows the Python visual
+screenshare framework to select the same BBB backend as the HTML5 client.
+
 ## Version 1.0.6
 
 Exports now include BBB's configured SFU audio negotiation settings

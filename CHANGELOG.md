@@ -1,5 +1,20 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.3.0 — Dynamic visual screenshare framework
+
+- Added ``client.screenshare.start()`` / ``stop()`` for mutable Python visual
+  surfaces published as real BBB screen shares.
+- Added ``VisualSurface`` for arbitrary Pillow or NumPy-backed visuals and
+  ``TextBoard`` for live title/body text that changes without renegotiating the
+  outgoing video track.
+- Added source-matched BBB WebRTC SFU screenshare signalling and LiveKit
+  screenshare publishing with reconnection support.
+- Added automatic RTL detection, Persian/Arabic/Hebrew font adaptation,
+  shaping, bidirectional ordering, RTL alignment, explicit direction control,
+  and custom-font selection for text boards.
+- Updated the session extractor to preserve BBB screenshare bridge, media
+  server, and bitrate settings.
+
 ## 0.2.4 — Audio-mode recovery after reconnects
 
 - Restored the saved BBB participant input mode after an SFU media reconnect.

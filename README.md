@@ -29,7 +29,7 @@ automation, media, events, models, reconnects, and controllers live in Python.
 | --- | --- |
 | **Bots** | welcome users, moderate rooms, react to events, manage breakouts |
 | **Automation** | chat, polls, captions, presentations, cameras, timers, recordings |
-| **Custom media** | publish Python-controlled audio and video where supported by BBB |
+| **Custom media** | publish Python-controlled audio, video, and mutable visual screenshares where supported by BBB |
 | **Typed code** | controllers, enums, models, generated schema catalog, async API |
 | **Multiple meetings** | one independent `sbc.client("meeting.sbc")` per session |
 

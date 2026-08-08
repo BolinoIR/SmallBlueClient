@@ -6,6 +6,7 @@ from .asyncio import AsyncSBCClient
 from .core.session import SBCSession, SessionHealth
 from .bridge import SessionBridge
 from .media import AudioPlaylist, MediaConnectionError, MediaHealth
+from .media.visuals import TextBoard, VisualSurface
 from .reliability import EnduranceMonitor, ReliabilityReport, ReliabilitySample
 from .bots import Bot, BotState, CommandContext, Rule
 from .core.logging import enable_logging
@@ -21,7 +22,7 @@ from .models import (BreakoutRoom, Camera, Caption, Chat, ChatMessage, ExternalV
 from .schema import BBBTable, SchemaCatalog, catalogs, schema
 from .core.exceptions import SBCError, SessionError, ConnectionError, GraphQLError, PermissionDenied, MutationNotFound, MutationValidationError, MediaStalledError
 
-__version__ = "0.2.4"
+__version__ = "0.3.0"
 
 def client(session_file: str | Path, *, connect: bool = True, auto_join: bool = True, listen_only: bool = True) -> SBCClient:
     """Load an exported ``.sbc`` session and return an independent client."""
@@ -34,7 +35,7 @@ def async_client(session_file: str | Path, *, auto_join: bool = True,
     return AsyncSBCClient(session_file, auto_join=auto_join, listen_only=listen_only)
 
 __all__ = [
-    "client", "async_client", "SBCClient", "AsyncSBCClient", "SBCSession", "SessionHealth", "SessionBridge", "MediaConnectionError", "MediaHealth", "AudioPlaylist",
+    "client", "async_client", "SBCClient", "AsyncSBCClient", "SBCSession", "SessionHealth", "SessionBridge", "MediaConnectionError", "MediaHealth", "AudioPlaylist", "VisualSurface", "TextBoard",
     "EnduranceMonitor", "ReliabilityReport", "ReliabilitySample", "Bot", "BotState", "CommandContext", "Rule",
     "enable_logging", "EVENTS", "schema", "catalogs", "SchemaCatalog", "BBBTable",
     "Role", "GuestPolicy", "GuestApproval", "PollType", "MediaType", "MediaScope", "Event",

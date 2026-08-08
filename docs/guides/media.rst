@@ -54,6 +54,77 @@ ordinary ``play()`` reliably opens the sender directly.
 SBC publishes custom media directly from Python. The extension is used only to
 export the session.
 
+Dynamic visual screenshare
+--------------------------
+
+SBC can publish a mutable Python visual as a real BBB screen share.  A board
+is a general rendering surface, not a special bot type: update it from chat
+commands, timers, files, a local API, or any application logic.  Updates are
+sent in subsequent video frames without restarting the screenshare.
+
+.. code-block:: python
+
+   board = client.screenshare.textboard(
+       "Waiting for the next item…",
+       title="Live status",
+       width=1280,
+       height=720,
+   )
+   client.screenshare.start(board)
+
+   # Later, from any application handler:
+   board.set_text("Round 2 starts now")
+   board.append("Please answer the poll.")
+
+   client.screenshare.stop()
+
+Local video files can be published as screenshare media too:
+
+.. code-block:: python
+
+   client.screenshare.play("status-loop.mp4", loop=True, frame_rate=15)
+   client.screenshare.stop()
+
+Static images are ordinary surfaces, so they can later be painted or replaced:
+
+.. code-block:: python
+
+   visual = client.screenshare.image("slide.png")
+   visual.paint(lambda image, draw: draw.rectangle((20, 20, 400, 120), fill="#0f172a"), clear=False)
+
+For arbitrary visual content, create a surface and paint it with Pillow.  The
+same surface stays connected while its pixels change:
+
+.. code-block:: python
+
+   surface = client.screenshare.surface(1280, 720, background="#111827")
+
+   def paint(image, draw):
+       draw.rectangle((80, 80, 1200, 640), outline="#38bdf8", width=8)
+       draw.text((120, 120), "Custom visual", fill="white")
+
+   surface.paint(paint)
+   client.screenshare.start(surface)
+
+Persian, Arabic, and RTL boards
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``TextBoard`` detects Arabic-family and Hebrew scripts automatically, selects a
+local script-capable font when available, right-aligns RTL text, and uses
+Arabic shaping plus bidirectional ordering on Pillow builds without libraqm.
+Set ``direction="rtl"`` to force RTL or provide a known font file with
+``font="path/to/font.ttf"``.
+
+.. code-block:: python
+
+   board = client.screenshare.textboard(
+       "سلام دنیا",
+       title="وضعیت جلسه",
+       language="fa",
+       direction="auto",
+   )
+   client.screenshare.start(board)
+
 Long-running bots
 -----------------
 

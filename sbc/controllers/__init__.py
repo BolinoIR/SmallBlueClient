@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable
 
 from ..types import CaptionProvider, GuestApproval, GuestPolicy, Layout, MediaScope, MediaType, PollType, Role, enum_value
@@ -23,6 +24,7 @@ from ..models import (
     WhiteboardAnnotation,
     WhiteboardCursor,
 )
+from ..media.visuals import Color, TextBoard, VisualSurface
 
 if TYPE_CHECKING:
     from ..core.client import SBCClient
@@ -186,7 +188,12 @@ class PluginsController(_Controller):
 
 
 class ScreenshareController(_Controller):
-    """Read screenshare state and control its BBB layout treatment."""
+    """Read, publish, and lay out dynamic BBB screen shares.
+
+    The controller accepts general-purpose mutable visual surfaces.  SBC does
+    not impose bot or command semantics; applications update their surface in
+    response to any input they choose.
+    """
 
     def current(self) -> Screenshare | None:
         rows = self._read(SCREENSHARE, "screenshare")
@@ -194,6 +201,82 @@ class ScreenshareController(_Controller):
 
     def set_as_content(self, enabled: bool = True) -> dict[str, Any]:
         return self._call("meetingLayoutSetScreenshareAsContent", screenshareAsContent=enabled)
+
+    def surface(
+        self,
+        width: int = 1280,
+        height: int = 720,
+        *,
+        frame_rate: int = 15,
+        background: "Color" = "#101827",
+    ) -> "VisualSurface":
+        """Create a generic mutable visual surface for :meth:`start`."""
+        from ..media.visuals import VisualSurface
+
+        return VisualSurface(width, height, frame_rate=frame_rate, background=background)
+
+    def textboard(
+        self,
+        text: str = "",
+        *,
+        title: str | None = None,
+        width: int = 1280,
+        height: int = 720,
+        frame_rate: int = 15,
+        background: "Color" = "#101827",
+        foreground: "Color" = "#f8fafc",
+        accent: "Color" = "#38bdf8",
+        font_size: int = 56,
+        padding: int = 72,
+        direction: str = "auto",
+        language: str | None = None,
+        font: str | None = None,
+    ) -> "TextBoard":
+        """Create a mutable text board for a live BBB screen share."""
+        from ..media.visuals import TextBoard
+
+        return TextBoard(
+            text,
+            title=title,
+            width=width,
+            height=height,
+            frame_rate=frame_rate,
+            background=background,
+            foreground=foreground,
+            accent=accent,
+            font_size=font_size,
+            padding=padding,
+            direction=direction,
+            language=language,
+            font=font,
+        )
+
+    def start(self, visual: "VisualSurface") -> None:
+        """Publish a mutable visual surface as the current BBB screenshare."""
+        self._client.media.screenshare.start(visual)
+
+    share = start
+
+    def play(self, file: str | Path, *, loop: bool = True, frame_rate: int = 15) -> None:
+        """Publish a local video file as the current BBB screenshare."""
+        self._client.media.screenshare.play(file, loop=loop, frame_rate=frame_rate)
+
+    def image(self, file: str | Path, *, width: int = 1280, height: int = 720,
+              frame_rate: int = 15, background: "Color" = "#101827") -> "VisualSurface":
+        """Load an image into a mutable surface and publish it as screenshare."""
+        visual = self.surface(width, height, frame_rate=frame_rate, background=background)
+        visual.load_image(file)
+        self.start(visual)
+        return visual
+
+    def stop(self) -> None:
+        """Stop the SBC-managed visual screenshare, if one is active."""
+        self._client.media.screenshare.stop()
+
+    @property
+    def active(self) -> bool:
+        """Whether an SBC-managed visual screenshare is currently connected."""
+        return self._client.media.screenshare.active
 
 
 class ReactionsController(_Controller):

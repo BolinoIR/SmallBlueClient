@@ -1,4 +1,6 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import sbc
 from sbc.core.client import SBCClient
@@ -80,3 +82,19 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(self.client.guests.list()[0].name, "Guest")
         self.assertEqual(self.client.captions.transcript()[0].text, "hello")
         self.assertEqual(self.client.whiteboards.current()[0].page_id, "page")
+
+    def test_screenshare_controller_creates_and_delegates_mutable_visuals(self):
+        board = self.client.screenshare.textboard("Ready", title="SBC", width=800, height=450)
+        self.assertEqual((board.width, board.height, board.text), (800, 450, "Ready"))
+
+        start = Mock()
+        stop = Mock()
+        play = Mock()
+        self.client.media.screenshare = SimpleNamespace(start=start, stop=stop, play=play, active=True)
+        self.client.screenshare.start(board)
+        start.assert_called_once_with(board)
+        self.client.screenshare.play("status.mp4", loop=False, frame_rate=24)
+        play.assert_called_once_with("status.mp4", loop=False, frame_rate=24)
+        self.assertTrue(self.client.screenshare.active)
+        self.client.screenshare.stop()
+        stop.assert_called_once_with()
