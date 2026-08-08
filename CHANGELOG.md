@@ -1,5 +1,18 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.2.2 — BBB SFU fingerprint compatibility
+
+- Fixed ``bbb-webrtc-sfu`` full-audio connections on BBB deployments that
+  advertise only a legacy ``sha-1`` DTLS fingerprint. SBC now validates that
+  fingerprint against the peer certificate instead of rejecting an otherwise
+  completed ICE connection.
+- Fixed full-audio answerer negotiation to attach the source track after the
+  SFU offer, matching BBB's ``AudioBroker`` ordering.
+- Added source-compatible TURN relay retry support and relay-only SDP
+  candidates after a normal ICE attempt fails.
+- Corrected legacy BBB 3.0 SDP-role defaults: full audio offers by default
+  unless an exported deployment setting enables transparent listen-only.
+
 ## 0.2.1 — Native async transport and community tooling
 
 - Added ``AsyncGraphQLTransport`` and ``AsyncGraphQLClient`` for raw native

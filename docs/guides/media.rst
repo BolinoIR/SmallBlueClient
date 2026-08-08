@@ -19,9 +19,23 @@ microphone automatically: this avoids SFU deployments briefly showing and then
 tearing down a silent microphone before there is audio to send. A fresh session exported by the
 current extractor also records the deployment's ``fullAudioOffering`` and
 ``transparentListenOnly`` settings so the Python WebRTC peer uses BBB's exact
-SDP offer/answer role. Older sessions use BBB 3.0's source default (transparent
-listen-only, with SBC answering the SFU offer). Re-export a session after
-updating the extension to preserve a deployment override.
+SDP offer/answer role. Older sessions use BBB 3.0's stock source defaults
+(``transparentListenOnly: false`` and ``fullAudioOffering: true``), with SBC
+offering the full-audio SDP. On an ICE/DTLS failure SBC retries through BBB's
+TURN relay and advertises relay candidates only, matching the browser client's
+retry-through-relay path. Re-export a session after updating the extension to
+preserve a deployment override.
+
+Legacy SFU fingerprint compatibility
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some BBB SFUs advertise a ``sha-1`` DTLS fingerprint despite successfully
+serving modern browser clients. SBC detects that source-compatible SDP form
+and enables aiortc's SHA-1 *fingerprint validation* for the connection. The
+peer certificate must still exactly match the fingerprint advertised by the
+SFU; SBC does not disable DTLS identity checks. This fixes the otherwise
+misleading combination ``ice=completed`` plus ``DTLS handshake failed
+(fingerprint mismatch)``.
 
 ``client.media.audio.warmup()`` remains available as an explicit low-latency
 option when a bot must play a clip immediately after an event. It is optional;

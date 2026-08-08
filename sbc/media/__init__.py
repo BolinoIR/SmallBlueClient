@@ -23,6 +23,25 @@ from ..core.logging import debug_trace, get_logger
 LIVEKIT_CREDENTIALS = "subscription SBCLiveKitCredentials{user_current{userId livekit{livekitToken} meeting{audioBridge cameraBridge}}}"
 
 
+def _enable_bbb_legacy_sha1_fingerprint() -> None:
+    """Allow validation of legacy BBB SFU ``sha-1`` DTLS fingerprints.
+
+    Some BBB 3.0 deployments still advertise only a ``sha-1`` certificate
+    fingerprint in the SFU-generated SDP.  Chromium accepts that WebRTC SDP;
+    modern aiortc deliberately supports only SHA-256/384/512 by default and
+    therefore rejects an otherwise successful ICE connection with
+    ``DTLS handshake failed (fingerprint mismatch)``.  Registering SHA-1 here
+    does *not* bypass validation: aiortc still computes SHA-1 from the peer's
+    certificate and requires an exact match with the SDP fingerprint.
+    """
+    import aiortc.rtcdtlstransport as dtls
+    from cryptography.hazmat.primitives import hashes
+
+    if "sha-1" not in dtls.X509_DIGEST_ALGORITHMS:
+        dtls.X509_DIGEST_ALGORITHMS["sha-1"] = hashes.SHA1()
+        debug_trace("media.legacy_sha1_fingerprint_enabled")
+
+
 class MediaConnectionError(ConnectionError):
     """BBB did not provide a LiveKit credential for the saved session."""
 
@@ -142,6 +161,12 @@ class _SFUAudioPublisher:
         self._audio_sender = None
         self._silent_track = None
         self._warmed = False
+        # BBB's browser retries failed ICE/DTLS connections through TURN.  A
+        # number of managed BBB installations are reachable only that way
+        # from corporate networks, VPNs, and CGNAT connections.  Keep the
+        # mode with the active publisher so automatic recovery uses the same
+        # successful route.
+        self._active_force_relay = False
     def _run(self): asyncio.set_event_loop(self.loop); self.loop.run_forever()
     def submit(self, coroutine): return asyncio.run_coroutine_threadsafe(coroutine, self.loop)
     def _url(self) -> str:
@@ -165,21 +190,18 @@ class _SFUAudioPublisher:
     def _full_audio_offering(self) -> bool:
         """Return BBB HTML5's actual full-audio SDP-offering mode.
 
-        BBB 3.0's ``SFUAudioBridge.getOfferingRole`` makes a full-audio
-        publisher answer the SFU offer whenever transparent listen-only is
-        enabled.  The server's stock setting enables that feature, so treating
-        every publisher as an offerer can establish a peer connection while
-        leaving its input media unusable.  New extractor sessions record both
-        flags; old sessions use the BBB 3.0 source default.
+        BBB's ``SFUAudioBridge.getOfferingRole`` makes a full-audio publisher
+        answer the SFU offer whenever transparent listen-only is enabled.
+        New extractor sessions record both flags.  BBB 3.0's stock source
+        defaults are ``transparentListenOnly: false`` and
+        ``fullAudioOffering: true``, so older sessions use the offerer route.
         """
-        # Sessions exported before SBC 0.1.5 lack these flags. BBB 3.0's
-        # source defaults transparent listen-only to true, which makes full
-        # audio the answerer.  Use that source default rather than treating an
-        # old session as an offerer.  The accompanying ``transparentListenOnly``
-        # start field below is essential for this answerer route.
+        # Sessions exported before SBC 0.1.5 lack these flags.  Preserve the
+        # stock HTML5 client defaults instead of guessing based on the
+        # listener mode selected by the Python client.
         if "transparent_listen_only" not in self._settings and "full_audio_offering" not in self._settings:
-            return False
-        transparent = bool(self._setting("transparent_listen_only", True))
+            return True
+        transparent = bool(self._setting("transparent_listen_only", False))
         return not transparent and bool(self._setting("full_audio_offering", True))
 
     def _start_request(self, local_offer: str | None) -> dict[str, Any]:
@@ -195,7 +217,7 @@ class _SFUAudioPublisher:
             "type": "audio",
             "role": "sendrecv",
             "clientSessionNumber": self._session_number,
-            "transparentListenOnly": bool(self._setting("transparent_listen_only", True)),
+            "transparentListenOnly": bool(self._setting("transparent_listen_only", False)),
         }
         if local_offer:
             request["sdpOffer"] = local_offer
@@ -208,7 +230,7 @@ class _SFUAudioPublisher:
         page_url = self.session.metadata.get("page_url", "")
         token = parse_qs(urlparse(page_url).query).get("sessionToken", [None])[0]
         return token or (self.session.connection_payload.get("headers") or {}).get("X-Session-Token") or ""
-    def _ice_configuration(self):
+    def _ice_configuration(self, *, force_relay: bool = False):
         """Fetch the exact TURN credentials used by BBB's SFU audio client."""
         from aiortc import RTCConfiguration, RTCIceServer
         token = self._session_token()
@@ -226,25 +248,62 @@ class _SFUAudioPublisher:
             # TLS endpoint: it survives Wi-Fi/VPN UDP filtering and mirrors
             # BBB's own retry-through-relay fallback.
             turns.sort(key=lambda item: 0 if str(item.urls).lower().startswith("turns:") else 1)
-            servers.extend(turns)
-            debug_trace("media.turn_credentials_loaded", stun_servers=len(data.get("stunServers", [])), turn_servers=len(turns))
-            return RTCConfiguration(iceServers=servers)
+            # aiortc does not expose the browser's ``iceTransportPolicy``.
+            # Omitting STUN endpoints and removing non-relay SDP candidates
+            # below is the equivalent of BBB's retry-through-relay path.
+            selected_servers = turns if force_relay else [*servers, *turns]
+            debug_trace(
+                "media.turn_credentials_loaded",
+                stun_servers=len(data.get("stunServers", [])),
+                turn_servers=len(turns),
+                force_relay=force_relay,
+            )
+            if force_relay and not turns:
+                raise MediaConnectionError("BBB did not return a TURN server for relay-only media recovery")
+            return RTCConfiguration(iceServers=selected_servers)
         except Exception as exc:
             raise MediaConnectionError(f"could not fetch BBB TURN credentials: {exc}") from exc
+
+    @staticmethod
+    def _outgoing_sdp(sdp: str, *, force_relay: bool) -> str:
+        """Return SDP suitable for BBB's retry-through-relay fallback.
+
+        ``aioice`` still discovers local candidates even when only TURN
+        servers are configured.  BBB receives candidates in the SDP when its
+        ``signalCandidates`` setting is disabled, therefore strip host/srflx
+        candidates on a relay retry.  The SFU can then select only the TURN
+        allocation, matching the browser's relay-only ICE retry.
+        """
+        if not force_relay:
+            return sdp
+        lines = sdp.replace("\r\n", "\n").split("\n")
+        kept = [line for line in lines if not line.startswith("a=candidate:") or " typ relay" in line]
+        return "\r\n".join(line for line in kept if line) + "\r\n"
+
     async def _play_once(self, filename: str, loop: bool, *, gain_db: float = 0.0,
-                         fade_in: float = 0.0) -> None:
+                         fade_in: float = 0.0, force_relay: bool = False) -> None:
         from aiortc.contrib.media import MediaPlayer
         self.player = MediaPlayer(filename, loop=loop)
         if self.player.audio is None: raise MediaConnectionError("the selected file has no audio stream")
-        await self._connect_track(_GainAudioTrack.create(self.player.audio, gain_db=gain_db, fade_in=fade_in))
+        await self._connect_track(
+            _GainAudioTrack.create(self.player.audio, gain_db=gain_db, fade_in=fade_in),
+            force_relay=force_relay,
+        )
 
-    async def _connect_track(self, track) -> None:
+    async def _connect_track(self, track, *, force_relay: bool = False) -> None:
         from aiortc import RTCPeerConnection, RTCSessionDescription
         import websockets
+        _enable_bbb_legacy_sha1_fingerprint()
         offering = self._full_audio_offering()
-        debug_trace("media.sfu_audio_connect_start", url=self._url(), offering=offering)
-        self.pc = RTCPeerConnection(self._ice_configuration())
-        self._audio_sender = self.pc.addTrack(track)
+        debug_trace("media.sfu_audio_connect_start", url=self._url(), offering=offering, force_relay=force_relay)
+        self.pc = RTCPeerConnection(self._ice_configuration(force_relay=force_relay))
+        # Keep the browser AudioBroker's negotiation ordering exactly.  An
+        # offerer must add the source before it creates its offer; an answerer
+        # first receives the SFU offer, then acquires/attaches the microphone
+        # before creating its answer.  Adding a track before an SFU offer can
+        # create an unmatched m-line in aiortc and causes the remote DTLS/ICE
+        # transport to fail even though candidate gathering completed.
+        self._audio_sender = self.pc.addTrack(track) if offering else None
         connected = asyncio.Event()
         @self.pc.on("connectionstatechange")
         def on_connection_state_change():
@@ -258,7 +317,7 @@ class _SFUAudioPublisher:
             await self.pc.setLocalDescription(offer)
             while self.pc.iceGatheringState != "complete":
                 await asyncio.sleep(0.05)
-            local_offer = self.pc.localDescription.sdp
+            local_offer = self._outgoing_sdp(self.pc.localDescription.sdp, force_relay=force_relay)
         headers = [(key, value) for key, value in self.session.headers.items() if value]
         self.ws = await websockets.connect(self._url(), extra_headers=headers, ping_interval=15, ping_timeout=20)
         # Exact BBB 3.0.32 AudioBroker.sendStartReq message. Full audio can be
@@ -283,11 +342,12 @@ class _SFUAudioPublisher:
                     if not remote_offer:
                         raise MediaConnectionError("BBB audio response did not contain an SDP offer")
                     await self.pc.setRemoteDescription(RTCSessionDescription(remote_offer, "offer"))
+                    self._audio_sender = self.pc.addTrack(track)
                     answer = await self.pc.createAnswer()
                     await self.pc.setLocalDescription(answer)
                     await self.ws.send(json.dumps({
                         "id": "subscriberAnswer", "type": "audio", "role": "sendrecv",
-                        "sdpOffer": self.pc.localDescription.sdp,
+                        "sdpOffer": self._outgoing_sdp(self.pc.localDescription.sdp, force_relay=force_relay),
                     }))
             elif message.get("id") == "iceCandidate" and message.get("candidate"):
                 # Needed by BBB installations configured for trickle ICE.
@@ -303,6 +363,7 @@ class _SFUAudioPublisher:
         if self.connection_state != "connected":
             raise MediaConnectionError(f"bbb-webrtc-sfu WebRTC connection failed (state={self.connection_state}, ice={self.pc.iceConnectionState})")
         self._ready = True
+        self._active_force_relay = force_relay
         debug_trace("media.sfu_audio_connected", connection_state=self.connection_state, ice_state=self.pc.iceConnectionState)
         self._signal_task = asyncio.create_task(self._listen_for_signals())
         # BBB's own BaseBroker uses JSON ``{id: 'ping'}`` heartbeats rather
@@ -417,7 +478,8 @@ class _SFUAudioPublisher:
                 await asyncio.sleep(delay)
                 try:
                     await self._play_once(self._active_file, self._active_loop,
-                                          gain_db=self._active_gain_db, fade_in=self._active_fade_in)
+                                          gain_db=self._active_gain_db, fade_in=self._active_fade_in,
+                                          force_relay=self._active_force_relay)
                     get_logger().info("BBB media reconnected")
                     return
                 except Exception:
@@ -465,9 +527,13 @@ class _SFUAudioPublisher:
         last_error: Exception | None = None
         delays = (1.0, 2.0, 4.0, 6.0)
         for attempt in range(5):
+            # The first attempt follows the deployment's normal ICE policy.
+            # On a failure retry through TURN, as BBB's AudioBroker does.
+            force_relay = attempt >= 1
             try:
-                get_logger().info("Starting BBB custom audio (attempt %s/5)", attempt + 1)
-                await self._play_once(filename, loop, gain_db=gain_db, fade_in=fade_in)
+                route = " via TURN relay" if force_relay else ""
+                get_logger().info("Starting BBB custom audio (attempt %s/5)%s", attempt + 1, route)
+                await self._play_once(filename, loop, gain_db=gain_db, fade_in=fade_in, force_relay=force_relay)
                 get_logger().info("BBB custom audio is publishing")
                 return
             except Exception as exc:
@@ -490,7 +556,8 @@ class _SFUAudioPublisher:
         await self._dispose()
         self._stopping = False
         await self._play_once(self._active_file, self._active_loop,
-                              gain_db=self._active_gain_db, fade_in=self._active_fade_in)
+                              gain_db=self._active_gain_db, fade_in=self._active_fade_in,
+                              force_relay=self._active_force_relay)
         get_logger().info("BBB audio sender recovered")
     async def _dispose(self) -> None:
         self._ready = False
@@ -550,6 +617,7 @@ class _SFUListener(_SFUAudioPublisher):
     async def _connect_listener(self) -> None:
         from aiortc import RTCPeerConnection, RTCSessionDescription
         import websockets
+        _enable_bbb_legacy_sha1_fingerprint()
 
         self.pc = RTCPeerConnection(self._ice_configuration())
         connected = asyncio.Event()
@@ -657,16 +725,18 @@ class _SFUVideoPublisher(_SFUAudioPublisher):
         self.client = client
         self.camera_id: str | None = None
 
-    async def _play_once(self, filename: str, loop: bool) -> None:
+    async def _play_once(self, filename: str, loop: bool, *, gain_db: float = 0.0,
+                         fade_in: float = 0.0, force_relay: bool = False) -> None:
         from aiortc import RTCPeerConnection, RTCSessionDescription
         from aiortc.contrib.media import MediaPlayer
         import websockets
+        _enable_bbb_legacy_sha1_fingerprint()
         self.player = MediaPlayer(filename, loop=loop)
         if self.player.video is None: raise MediaConnectionError("the selected file has no video stream")
         # VideoService.buildStreamName(): <userId>_<clientSessionUUID>_<deviceId>
         client_uuid = (self.session.connection_payload.get("headers") or {}).get("X-ClientSessionUUID", "sbc")
         self.camera_id = f"{self.session.user_id}_{client_uuid}_sbc-custom-camera"
-        self.pc = RTCPeerConnection(self._ice_configuration()); self.pc.addTrack(self.player.video)
+        self.pc = RTCPeerConnection(self._ice_configuration(force_relay=force_relay)); self.pc.addTrack(self.player.video)
         connected = asyncio.Event()
         @self.pc.on("connectionstatechange")
         def on_connection_state_change():
@@ -679,7 +749,7 @@ class _SFUVideoPublisher(_SFUAudioPublisher):
         self.ws = await websockets.connect(self._url(), extra_headers=headers, ping_interval=15, ping_timeout=20)
         # Exact VideoProvider start fields: type, cameraId, role, sdpOffer,
         # bitrate, record and optional mediaServer.
-        message = {"id": "start", "type": "video", "cameraId": self.camera_id, "role": "share", "sdpOffer": self.pc.localDescription.sdp, "bitrate": 200, "record": True}
+        message = {"id": "start", "type": "video", "cameraId": self.camera_id, "role": "share", "sdpOffer": self._outgoing_sdp(self.pc.localDescription.sdp, force_relay=force_relay), "bitrate": 200, "record": True}
         media_server = self._setting("camera_media_server")
         if media_server: message["mediaServer"] = media_server
         await self.ws.send(json.dumps(message))

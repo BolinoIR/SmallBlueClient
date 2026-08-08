@@ -6,7 +6,12 @@ import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock
 
-from sbc.media import MediaController, _SFUAudioPublisher, _SilenceAudioTrack
+from sbc.media import (
+    MediaController,
+    _SFUAudioPublisher,
+    _SilenceAudioTrack,
+    _enable_bbb_legacy_sha1_fingerprint,
+)
 
 
 class MediaTests(unittest.TestCase):
@@ -19,12 +24,33 @@ class MediaTests(unittest.TestCase):
         return publisher
 
     def test_full_audio_offering_follows_bbb_transparent_listen_only_rules(self) -> None:
-        # SBC 0.1.5 uses BBB 3.0's stock transparent-listen-only default for
-        # legacy sessions that did not record the negotiation settings.
-        self.assertFalse(self.publisher({})._full_audio_offering())
+        # BBB 3.0's stock defaults are transparentListenOnly=False and
+        # fullAudioOffering=True. Legacy exports therefore use the offerer
+        # route unless their captured deployment settings say otherwise.
+        self.assertTrue(self.publisher({})._full_audio_offering())
         self.assertFalse(self.publisher({"transparent_listen_only": True, "full_audio_offering": True})._full_audio_offering())
         self.assertTrue(self.publisher({"transparent_listen_only": False, "full_audio_offering": True})._full_audio_offering())
         self.assertFalse(self.publisher({"transparent_listen_only": False, "full_audio_offering": False})._full_audio_offering())
+
+    def test_relay_retry_sdp_only_advertises_turn_candidates(self) -> None:
+        sdp = (
+            "v=0\r\n"
+            "a=candidate:host 1 udp 1 192.168.1.4 1234 typ host\r\n"
+            "a=candidate:server 1 udp 1 203.0.113.8 1234 typ srflx\r\n"
+            "a=candidate:turn 1 udp 1 198.51.100.9 1234 typ relay\r\n"
+        )
+        self.assertEqual(self.publisher({})._outgoing_sdp(sdp, force_relay=False), sdp)
+        relay_sdp = self.publisher({})._outgoing_sdp(sdp, force_relay=True)
+        self.assertIn("typ relay", relay_sdp)
+        self.assertNotIn("typ host", relay_sdp)
+        self.assertNotIn("typ srflx", relay_sdp)
+
+    def test_legacy_bbb_sha1_fingerprint_is_validated_not_ignored(self) -> None:
+        import aiortc.rtcdtlstransport as dtls
+        _enable_bbb_legacy_sha1_fingerprint()
+        # The compatibility path extends aiortc's normal certificate digest
+        # validation map; it never disables remote identity validation.
+        self.assertIn("sha-1", dtls.X509_DIGEST_ALGORITHMS)
 
     def test_new_session_snapshot_preserves_all_audio_negotiation_settings(self) -> None:
         settings = {
@@ -44,7 +70,7 @@ class MediaTests(unittest.TestCase):
         answerer._session_number = 0
         self.assertEqual(answerer._start_request(None), {
             "id": "start", "type": "audio", "role": "sendrecv",
-            "clientSessionNumber": 1, "transparentListenOnly": True,
+            "clientSessionNumber": 1, "transparentListenOnly": False,
         })
 
         offerer = self.publisher({
