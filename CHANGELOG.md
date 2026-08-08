@@ -1,5 +1,14 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.2.3 — Long-running meeting liveness
+
+- Added HTML5-source-compatible ``/bigbluebutton/rtt-check`` and
+  ``userSetConnectionAlive`` heartbeats so long-running SBC clients retain a
+  live BBB participant lease while publishing media.
+- Added timestamps to normal and structured SBC logs.
+- Added media connection-state, ICE-state, and SFU signalling-close details
+  to make a later disconnect immediately diagnosable.
+
 ## 0.2.2 — BBB SFU fingerprint compatibility
 
 - Fixed ``bbb-webrtc-sfu`` full-audio connections on BBB deployments that

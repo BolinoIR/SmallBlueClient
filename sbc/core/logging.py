@@ -13,6 +13,7 @@ class StructuredFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         payload = {
+            "timestamp": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
             "logger": record.name,
             "level": record.levelname,
             "message": record.getMessage(),
@@ -29,7 +30,11 @@ def enable_logging(level: Union[int, str] = logging.INFO, *, structured: bool = 
     if not handlers:
         handler = logging.StreamHandler()
         handler._sbc_handler = True  # type: ignore[attr-defined]
-        handler.setFormatter(StructuredFormatter() if structured else logging.Formatter("[SBC %(levelname)s] %(message)s"))
+        handler.setFormatter(
+            StructuredFormatter()
+            if structured
+            else logging.Formatter("[%(asctime)s] [SBC %(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
+        )
         LOGGER.addHandler(handler)
     elif structured:
         for handler in handlers:

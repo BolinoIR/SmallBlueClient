@@ -308,6 +308,11 @@ class _SFUAudioPublisher:
         @self.pc.on("connectionstatechange")
         def on_connection_state_change():
             self.connection_state = self.pc.connectionState
+            get_logger().info(
+                "BBB custom audio connection state: %s (ICE %s)",
+                self.connection_state,
+                self.pc.iceConnectionState,
+            )
             if self.connection_state in ("connected", "failed", "closed"): connected.set()
             if self._ready and self.connection_state in ("failed", "closed"):
                 self._schedule_reconnect()
@@ -409,8 +414,15 @@ class _SFUAudioPublisher:
                     raise MediaConnectionError(message.get("reason", "bbb-webrtc-sfu audio error"))
         except asyncio.CancelledError:
             raise
-        except Exception:
-            pass
+        except Exception as exc:
+            close_code = getattr(self.ws, "close_code", None) if self.ws else None
+            close_reason = getattr(self.ws, "close_reason", None) if self.ws else None
+            get_logger().warning(
+                "BBB media signalling ended (code=%s, reason=%s, error=%s)",
+                close_code,
+                close_reason or "none",
+                exc,
+            )
         finally:
             if self._ready:
                 self._schedule_reconnect()
@@ -471,7 +483,12 @@ class _SFUAudioPublisher:
             # BBB's AudioBroker retries connection failures. Retain the same
             # file source and create a fresh PeerConnection/session number.
             for delay in (1.0, 2.0, 5.0):
-                get_logger().warning("BBB media disconnected; retrying in %.0fs", delay)
+                get_logger().warning(
+                    "BBB media disconnected (state=%s, ICE=%s); retrying in %.0fs",
+                    self.connection_state,
+                    self.pc.iceConnectionState if self.pc else "closed",
+                    delay,
+                )
                 await self._dispose()
                 if self._stopping or not self._active_file:
                     return

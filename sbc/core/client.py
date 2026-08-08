@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 from urllib.request import Request, urlopen
 
 from .events import EventEmitter
@@ -296,6 +296,8 @@ class SBCClient(EventEmitter):
         self._event_multiplexer: SubscriptionMultiplexer | None = None
         self._custom_streams: list[tuple[str, dict[str, Any], Any]] = []
         self._enabled_event_streams: set[str] = set()
+        self._connection_lease_stop = threading.Event()
+        self._connection_lease_thread: threading.Thread | None = None
         self.auto_join = auto_join
         self.listen_only = listen_only
         # ``ensure_joined`` can be reached repeatedly (for example after a
@@ -332,7 +334,84 @@ class SBCClient(EventEmitter):
         self.transport.connect()
         if self.auto_join:
             self.ensure_joined()
+        self._start_connection_lease()
         return self
+
+    def _start_connection_lease(self) -> None:
+        """Mirror the HTML5 client's RTT/liveness heartbeat in the background.
+
+        BBB treats a WebSocket transport and its media SFU socket as separate
+        resources.  Keeping only the SFU WebSocket alive can leave a bot's
+        ``connectionAliveAt`` stale, allowing some deployments to remove the
+        participant and subsequently terminate its media transport.
+        """
+        if self._connection_lease_thread and self._connection_lease_thread.is_alive():
+            return
+        self._connection_lease_stop.clear()
+        self._connection_lease_thread = threading.Thread(
+            target=self._connection_lease_loop,
+            daemon=True,
+            name="sbc-connection-lease",
+        )
+        self._connection_lease_thread.start()
+        get_logger().info("Started BBB connection-liveness heartbeat")
+
+    def _connection_lease_loop(self) -> None:
+        # BBB HTML5 defaults its RTT worker to ten seconds and starts its
+        # first request after half an interval.
+        if self._connection_lease_stop.wait(5):
+            return
+        while not self._connection_lease_stop.is_set():
+            try:
+                self._report_connection_alive()
+            except Exception as exc:
+                # A transient RTT endpoint failure must never terminate media
+                # or the main automation client. It is retried on the next
+                # source-compatible heartbeat interval.
+                get_logger().warning("BBB connection-liveness heartbeat failed: %s", exc)
+            if self._connection_lease_stop.wait(10):
+                return
+
+    def _report_connection_alive(self) -> None:
+        """Perform BBB HTML5's ``/rtt-check`` then ``userSetConnectionAlive`` flow."""
+        meeting_id = self.session.meeting_id or self.meeting.info().id
+        if not meeting_id:
+            raise ConnectionError("BBB connection-liveness heartbeat needs a meeting id")
+        client_uuid = self.transport.client_session_uuid
+        query = urlencode({"session": client_uuid, "user": self.session.user_id or "", "meeting": meeting_id})
+        # HTML5 calls ``getBaseUrl()/rtt-check``. BBB 3.0's source default is
+        # ``public.app.bbbWebBase = /bigbluebutton``; extractor snapshots can
+        # override it for reverse-proxy deployments.
+        app_settings = self.session.snapshot.get("meeting_client_settings") or {}
+        public_app: dict[str, Any] = {}
+        if isinstance(app_settings, dict):
+            public = app_settings.get("public") or {}
+            if isinstance(public, dict) and isinstance(public.get("app"), dict):
+                public_app = public["app"]
+        web_base = self.session.snapshot.get("bbb_web_base") or public_app.get("bbbWebBase") or "/bigbluebutton"
+        endpoint = urljoin(f"{self.session.server}/", f"{str(web_base).strip('/')}/rtt-check?{query}")
+        started = time.perf_counter()
+        request = Request(endpoint, headers=self.session.headers)
+        with urlopen(request, timeout=10) as response:
+            # BBB's worker returns this request id and the GraphQL mutation
+            # uses it to associate the browser RTT measurement server-side.
+            request_id = response.headers.get("X-Request-Id")
+        if not request_id:
+            raise ConnectionError("BBB RTT check did not return X-Request-Id")
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+        mutation = (
+            "mutation SBCConnectionAlive($serverRequestId:String!,$clientSessionUUID:String!,"
+            "$networkRttInMs:Float!,$applicationRttInMs:Float){"
+            "userSetConnectionAlive(serverRequestId:$serverRequestId,clientSessionUUID:$clientSessionUUID,"
+            "networkRttInMs:$networkRttInMs,applicationRttInMs:$applicationRttInMs)}"
+        )
+        self.graphql.mutation(mutation, {
+            "serverRequestId": request_id,
+            "clientSessionUUID": client_uuid,
+            "networkRttInMs": elapsed_ms,
+            "applicationRttInMs": None,
+        })
+        get_logger().debug("BBB connection-liveness heartbeat acknowledged (RTT %.0f ms)", elapsed_ms)
 
     def _handle_graphql_error(self, error: GraphQLError) -> None:
         """Flag browser credentials that BBB says are no longer usable."""
@@ -483,6 +562,10 @@ class SBCClient(EventEmitter):
             get_logger().warning("BBB microphone mode could not be started: %s", exc)
     def close(self) -> None:
         self._stop.set()
+        self._connection_lease_stop.set()
+        lease = self._connection_lease_thread
+        if lease and lease is not threading.current_thread():
+            lease.join(timeout=1)
         self.transport.close()
         self.media.close()
         if self._event_multiplexer is not None:

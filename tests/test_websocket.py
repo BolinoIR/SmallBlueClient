@@ -17,6 +17,11 @@ class ReconnectingTransport(GraphQLWebSocket):
     def _send(self, message): pass
 
 class WebSocketTests(unittest.TestCase):
+    def test_each_transport_has_a_stable_connection_liveness_uuid(self):
+        transport = GraphQLWebSocket(SBCSession(server="https://bbb.example", websocket_url="wss://bbb.example/graphql"))
+        self.assertRegex(transport.client_session_uuid, r"^[0-9a-f-]{36}$")
+        self.assertEqual(transport.client_session_uuid, transport.client_session_uuid)
+
     def test_execute_reconnects_after_a_temporary_disconnect(self):
         transport = ReconnectingTransport()
         with patch("sbc.core.websocket.time.sleep"):

@@ -44,6 +44,16 @@ ordinary ``play()`` reliably opens the sender directly.
 SBC publishes custom media directly from Python. The extension is used only to
 export the session.
 
+Long-running bots
+-----------------
+
+SBC mirrors the BBB HTML5 client's RTT/liveness workflow while a client is
+connected: it calls ``/bigbluebutton/rtt-check`` and submits the returned
+request id through ``userSetConnectionAlive`` every ten seconds. This keeps the
+BBB participant lease current even when a bot has no chat, event, or UI
+traffic. Normal foreground logs include local timestamps and report both media
+connection and ICE state when the SFU reconnects.
+
 .. code-block:: python
 
    sbc.enable_logging("DEBUG", structured=True)

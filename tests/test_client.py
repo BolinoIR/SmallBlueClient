@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from pathlib import Path
 import tempfile
 
@@ -19,6 +19,23 @@ class Transport:
     def subscribe(self, query, variables): return iter(())
 
 class ClientTests(unittest.TestCase):
+    def test_connection_liveness_uses_bbb_rtt_check_and_exact_mutation(self):
+        session = SBCSession(server="https://bbb.example", websocket_url="wss://bbb.example/graphql", meeting_id="m1", user_id="u1")
+        client = SBCClient(session, connect=False)
+        transport = Transport()
+        client.graphql.transport = transport
+        response = MagicMock()
+        response.headers = {"X-Request-Id": "request-1"}
+        response.__enter__.return_value = response
+
+        with patch("sbc.core.client.urlopen", return_value=response) as urlopen:
+            client._report_connection_alive()
+
+        self.assertIn("/bigbluebutton/rtt-check?", urlopen.call_args.args[0].full_url)
+        self.assertIn("userSetConnectionAlive", transport.last_query)
+        self.assertEqual(transport.last_variables["serverRequestId"], "request-1")
+        self.assertEqual(transport.last_variables["clientSessionUUID"], client.transport.client_session_uuid)
+
     def test_high_level_meeting_and_users_without_network(self):
         client = SBCClient(SBCSession(server="https://bbb.example", websocket_url="wss://bbb.example/graphql"), connect=False)
         client.graphql.transport = Transport()

@@ -42,6 +42,12 @@ class GraphQLWebSocket:
         if isinstance(payload_headers, dict):
             payload_headers["X-ClientSessionUUID"] = str(uuid.uuid4())
 
+    @property
+    def client_session_uuid(self) -> str:
+        """The per-transport UUID BBB uses for connection-liveness reports."""
+        headers = self._connection_payload.get("headers") or {}
+        return str(headers.get("X-ClientSessionUUID", "0"))
+
     def connect(self) -> None:
         with self._lock:
             if self._closed:
