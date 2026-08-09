@@ -354,7 +354,14 @@ class _SFUAudioPublisher:
                 raise MediaConnectionError("BBB did not return a TURN server for relay-only media recovery")
             return RTCConfiguration(iceServers=selected_servers)
         except Exception as exc:
-            raise MediaConnectionError(f"could not fetch BBB TURN credentials: {exc}") from exc
+            detail = str(exc)
+            if "Could not find conference" in detail:
+                detail = (
+                    "BBB could not map this HTTP session to an active conference; "
+                    "open the BBB tab, join an audio mode once, reload it, and export a fresh .sbc session "
+                    "so the extractor can include the browser-observed TURN credentials"
+                )
+            raise MediaConnectionError(f"could not fetch BBB TURN credentials: {detail}") from exc
 
     @staticmethod
     def _outgoing_sdp(sdp: str, *, force_relay: bool) -> str:
@@ -730,7 +737,7 @@ class _SFUListener(_SFUAudioPublisher):
         self._stopping = False
         self._listener_active = True
         try:
-            await asyncio.wait_for(self._connect_listener(), timeout=30)
+            await self._connect_listener_with_retries()
             get_logger().info("BBB listener audio is connected")
         except Exception:
             self._listener_active = False
@@ -738,12 +745,30 @@ class _SFUListener(_SFUAudioPublisher):
             await self._dispose()
             raise
 
-    async def _connect_listener(self) -> None:
+    async def _connect_listener_with_retries(self) -> None:
+        """Retry listener media with BBB's relay-only fallback route."""
+        last_error: Exception | None = None
+        for attempt in range(3):
+            force_relay = attempt > 0
+            try:
+                route = " via TURN relay" if force_relay else ""
+                get_logger().info("Starting BBB listener SFU session (attempt %s/3)%s", attempt + 1, route)
+                await asyncio.wait_for(self._connect_listener(force_relay=force_relay), timeout=30)
+                return
+            except Exception as exc:
+                last_error = exc
+                get_logger().warning("BBB listener attempt %s failed: %s", attempt + 1, exc)
+                await self._dispose()
+                if attempt < 2:
+                    await asyncio.sleep((1.0, 3.0)[attempt])
+        raise MediaConnectionError(f"could not establish BBB listener audio: {last_error}") from last_error
+
+    async def _connect_listener(self, *, force_relay: bool = False) -> None:
         from aiortc import RTCPeerConnection, RTCSessionDescription
         import websockets
         _enable_bbb_legacy_sha1_fingerprint()
 
-        self.pc = RTCPeerConnection(self._ice_configuration())
+        self.pc = RTCPeerConnection(self._ice_configuration(force_relay=force_relay))
         connected = asyncio.Event()
 
         @self.pc.on("connectionstatechange")
@@ -766,7 +791,7 @@ class _SFUListener(_SFUAudioPublisher):
             while self.pc.iceGatheringState != "complete":
                 await asyncio.sleep(0.05)
             local_offer = self.pc.localDescription.sdp
-        get_logger().info("Starting BBB listener SFU session (offering=%s)", offering)
+        get_logger().info("Negotiating BBB listener SFU session (offering=%s)", offering)
         headers = [(key, value) for key, value in self.session.headers.items() if value]
         self.ws = await websockets.connect(self._url(), extra_headers=headers, ping_interval=15, ping_timeout=20, close_timeout=2)
         self._session_number += 1
@@ -776,7 +801,7 @@ class _SFUListener(_SFUAudioPublisher):
             "transparentListenOnly": False,
         }
         if local_offer:
-            message["sdpOffer"] = local_offer
+            message["sdpOffer"] = self._outgoing_sdp(local_offer, force_relay=force_relay)
         media_server = self._setting("listen_only_media_server")
         if media_server:
             message["mediaServer"] = media_server
@@ -803,7 +828,7 @@ class _SFUListener(_SFUAudioPublisher):
                     await self.pc.setLocalDescription(answer)
                     await self.ws.send(json.dumps({
                         "id": "subscriberAnswer", "type": "audio", "role": "recv",
-                        "sdpOffer": self.pc.localDescription.sdp,
+                        "sdpOffer": self._outgoing_sdp(self.pc.localDescription.sdp, force_relay=force_relay),
                     }))
             elif message.get("id") == "iceCandidate" and message.get("candidate"):
                 await self._add_remote_candidate(self.pc, message["candidate"])
@@ -818,6 +843,7 @@ class _SFUListener(_SFUAudioPublisher):
         if self.connection_state != "connected":
             raise MediaConnectionError(f"BBB listener WebRTC connection failed (state={self.connection_state}, ice={self.pc.iceConnectionState})")
         self._ready = True
+        self._active_force_relay = force_relay
         self._signal_task = asyncio.create_task(self._listen_for_signals())
         self._notify_connection_ready()
 
@@ -830,7 +856,7 @@ class _SFUListener(_SFUAudioPublisher):
                     return
                 await asyncio.sleep(delay)
                 try:
-                    await self._connect_listener()
+                    await self._connect_listener(force_relay=self._active_force_relay)
                     get_logger().info("BBB listener reconnected")
                     return
                 except Exception:

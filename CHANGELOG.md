@@ -1,5 +1,10 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.3.2 — TURN session diagnostics
+
+- Added precise recovery guidance when BBB cannot associate a saved HTTP
+  session with an active conference while fetching TURN credentials.
+
 ## 0.3.1 — Screenshare SFU reliability
 
 - Fixed BBB screenshare negotiation ordering to match `ScreenshareBroker`.
