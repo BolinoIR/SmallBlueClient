@@ -13,6 +13,10 @@
     currentUser: {},
     livekit: {},
     meeting: {},
+    // Ephemeral credentials observed from BBB's own STUN/TURN fetch. They
+    // are required by content media on deployments which do not permit
+    // private host ICE candidates to reach the SFU.
+    iceServers: null,
   };
   const bbbWords = /\b(meeting|user|chat|voice|presentation|breakoutRoom|screenshare)\b/gi;
 
@@ -92,6 +96,39 @@
       stun_turn_url: media.stunTurnServersFetchAddress || "/bigbluebutton/api/stuns",
     };
   }
+  function iceCredentialExpiry(turnServers) {
+    for (const server of turnServers || []) {
+      const value = String(server?.username || "").split(":", 1)[0];
+      const timestamp = Number(value);
+      if (Number.isFinite(timestamp) && timestamp > 0) {
+        return new Date(timestamp * 1000).toISOString();
+      }
+    }
+    return null;
+  }
+  function observeIceResponse(url, payload) {
+    if (!payload || typeof payload !== "object") return;
+    const settings = bbbWebrtcSfuSnapshot();
+    const expected = String(settings.stun_turn_url || "").split("?")[0];
+    const pathname = new URL(String(url), location.href).pathname;
+    if (!/stuns|turn/i.test(pathname) && !pathname.endsWith(expected)) return;
+    const stunServers = Array.isArray(payload.stunServers) ? payload.stunServers : [];
+    const turnServers = Array.isArray(payload.turnServers) ? payload.turnServers : [];
+    if (!turnServers.length) return;
+    // Copy only the normalised browser response. The extension never asks for
+    // credentials, retries the request, or changes BBB media behaviour.
+    state.iceServers = {
+      endpoint: new URL(String(url), location.href).pathname,
+      captured_at: new Date().toISOString(),
+      expires_at: iceCredentialExpiry(turnServers),
+      stun_servers: clone(stunServers),
+      turn_servers: clone(turnServers),
+    };
+    notify();
+  }
+  function observeIceText(url, text) {
+    try { observeIceResponse(url, JSON.parse(text)); } catch (_) {}
+  }
 
   const session = () => ({
     detected: state.detected,
@@ -123,6 +160,7 @@
           join_error_message: state.currentUser.joinErrorMessage || null,
         } : {},
         bbb_webrtc_sfu: bbbWebrtcSfuSnapshot(),
+        ...(state.iceServers ? { ice_servers: clone(state.iceServers) } : {}),
         ...(state.meeting.screenShareBridge ? { screenshare_backend: state.meeting.screenShareBridge } : {}),
         ...(state.livekit.token ? { livekit: clone(state.livekit) } : {}),
       },
@@ -188,6 +226,27 @@
   ObservedWebSocket.prototype = NativeWebSocket.prototype;
   Object.setPrototypeOf(ObservedWebSocket, NativeWebSocket);
   window.WebSocket = ObservedWebSocket;
+  // BBB source fetches STUN/TURN data with ``fetch(..., {credentials:
+  // 'include'})``. Observe that already-authorized browser response so a
+  // fresh exported session has the exact short-lived ICE configuration.
+  const nativeFetch = window.fetch?.bind(window);
+  if (nativeFetch) {
+    window.fetch = async function observedFetch(...args) {
+      const response = await nativeFetch(...args);
+      const url = typeof args[0] === "string" ? args[0] : args[0]?.url;
+      if (url) response.clone().text().then((text) => observeIceText(url, text)).catch(() => {});
+      return response;
+    };
+  }
+  const NativeXHR = window.XMLHttpRequest;
+  if (NativeXHR) {
+    const nativeOpen = NativeXHR.prototype.open;
+    NativeXHR.prototype.open = function observedOpen(method, url, ...rest) {
+      this.__sbcCaptureUrl = url;
+      this.addEventListener("load", () => observeIceText(this.__sbcCaptureUrl, this.responseText));
+      return nativeOpen.call(this, method, url, ...rest);
+    };
+  }
 
   window.addEventListener("message", (event) => {
     if (event.source === window && event.data?.type === "SBC_REQUEST_PAGE_CAPTURE") {

@@ -62,6 +62,22 @@ is a general rendering surface, not a special bot type: update it from chat
 commands, timers, files, a local API, or any application logic.  Updates are
 sent in subsequent video frames without restarting the screenshare.
 
+Fresh ICE credentials
+~~~~~~~~~~~~~~~~~~~~~
+BBB issues short-lived TURN credentials for WebRTC content media.  The session
+extractor now passively records the exact STUN/TURN response already fetched
+by the authenticated BBB tab.  Reload the BBB tab after updating the
+extractor, wait until it has joined the meeting, then export a new ``.sbc``
+file before starting a visual screenshare.  SBC uses those credentials first,
+refreshes them through BBB when possible, and reports a clear credential error
+instead of retrying impossible host-only ICE routes.
+
+Screenshare negotiation follows BBB's ``ScreenshareBroker``: the signalling
+socket is opened before the offer, browser-format remote ICE candidates are
+converted for aiortc, candidates received before the answer are retained, and
+the optional ``playStart`` message is not required for a connection to become
+ready.
+
 .. code-block:: python
 
    board = client.screenshare.textboard(

@@ -68,6 +68,27 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(publisher._setting("audio_media_server"), "mediasoup")
         self.assertTrue(publisher._setting("signal_candidates"))
 
+    def test_fresh_extractor_turn_credentials_are_used_without_a_second_http_request(self) -> None:
+        publisher = self.publisher({
+            "ice_servers": {
+                "expires_at": "2099-01-01T00:00:00Z",
+                "stun_servers": [{"url": "stun:stun.example:3478"}],
+                "turn_servers": [{"url": "turns:turn.example:5349", "username": "x", "password": "y"}],
+            },
+        })
+        configuration = publisher._ice_configuration(force_relay=True)
+        self.assertEqual(len(configuration.iceServers), 1)
+        self.assertEqual(configuration.iceServers[0].urls, "turns:turn.example:5349")
+
+    def test_browser_json_ice_candidate_is_converted_for_aiortc(self) -> None:
+        peer = SimpleNamespace(addIceCandidate=AsyncMock())
+        asyncio.run(_SFUAudioPublisher._add_remote_candidate(peer, {
+            "candidate": "candidate:1 1 udp 2130706431 192.0.2.1 5000 typ host",
+            "sdpMid": "0", "sdpMLineIndex": 0,
+        }))
+        candidate = peer.addIceCandidate.await_args.args[0]
+        self.assertEqual((candidate.sdpMid, candidate.sdpMLineIndex), ("0", 0))
+
     def test_audio_start_request_matches_bbb_audiobroker_for_answerer_and_offerer(self) -> None:
         answerer = self.publisher({})
         answerer._session_number = 0

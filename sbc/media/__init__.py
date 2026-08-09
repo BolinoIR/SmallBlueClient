@@ -236,19 +236,100 @@ class _SFUAudioPublisher:
         page_url = self.session.metadata.get("page_url", "")
         token = parse_qs(urlparse(page_url).query).get("sessionToken", [None])[0]
         return token or (self.session.connection_payload.get("headers") or {}).get("X-Session-Token") or ""
+
+    @staticmethod
+    def _ice_expired(credentials: dict[str, Any]) -> bool:
+        """Return whether browser-observed ephemeral ICE credentials are stale.
+
+        BBB TURN usernames conventionally start with a Unix expiry timestamp.
+        An explicit ``expires_at`` captured by the extractor takes precedence.
+        """
+        expires_at = credentials.get("expires_at")
+        if isinstance(expires_at, (int, float)):
+            return float(expires_at) <= time.time() + 15
+        if isinstance(expires_at, str):
+            with contextlib.suppress(ValueError):
+                return datetime.fromisoformat(expires_at.replace("Z", "+00:00")).timestamp() <= time.time() + 15
+        for item in credentials.get("turn_servers", credentials.get("turnServers", [])):
+            username = str(item.get("username") or "")
+            with contextlib.suppress(ValueError):
+                return int(username.split(":", 1)[0]) <= time.time() + 15
+        return False
+
+    @staticmethod
+    def _ice_items(data: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Normalize BBB's JSON and browser WebRTC ICE-server representations."""
+        stun = list(data.get("stun_servers", data.get("stunServers", [])) or [])
+        turn = list(data.get("turn_servers", data.get("turnServers", [])) or [])
+        return (
+            [item for item in stun if isinstance(item, dict) and (item.get("url") or item.get("urls"))],
+            [item for item in turn if isinstance(item, dict) and (item.get("url") or item.get("urls"))],
+        )
+
+    def _captured_ice_credentials(self) -> dict[str, Any] | None:
+        credentials = self._settings.get("ice_servers") or self.session.snapshot.get("ice_servers")
+        if not isinstance(credentials, dict):
+            return None
+        _stun, turns = self._ice_items(credentials)
+        return credentials if turns and not self._ice_expired(credentials) else None
+
+    @staticmethod
+    async def _add_remote_candidate(peer: Any, payload: Any) -> None:
+        """Translate BBB's JSON candidate into aiortc's candidate object.
+
+        Chromium's ``RTCIceCandidate`` is serialized as JSON by BBB's SFU;
+        aiortc deliberately does not accept that browser JSON directly.
+        """
+        if not isinstance(payload, dict):
+            await peer.addIceCandidate(payload)
+            return
+        candidate_sdp = payload.get("candidate")
+        if not candidate_sdp:
+            await peer.addIceCandidate(None)
+            return
+        from aiortc.sdp import candidate_from_sdp
+        candidate = candidate_from_sdp(str(candidate_sdp).removeprefix("candidate:"))
+        candidate.sdpMid = payload.get("sdpMid")
+        candidate.sdpMLineIndex = payload.get("sdpMLineIndex")
+        await peer.addIceCandidate(candidate)
+
     def _ice_configuration(self, *, force_relay: bool = False):
-        """Fetch the exact TURN credentials used by BBB's SFU audio client."""
+        """Fetch (or reuse) the exact short-lived BBB TURN credentials.
+
+        Content media cannot generally use private host candidates.  Treat a
+        missing TURN response as a credential/session problem, never as a
+        normal ICE route which would only fail later with an opaque timeout.
+        """
         from aiortc import RTCConfiguration, RTCIceServer
-        token = self._session_token()
-        configured = self._setting("stun_turn_url", "/bigbluebutton/api/stuns")
-        endpoint = urlunparse(urlparse(urljoin(f"{self.session.server}/", configured)))
-        separator = "&" if "?" in endpoint else "?"
-        endpoint = f"{endpoint}{separator}{urlencode({'sessionToken': token})}"
+        data = self._captured_ice_credentials()
+        source = "captured"
         try:
-            request = Request(endpoint, headers=self.session.headers)
-            with urlopen(request, timeout=10) as response: data = json.load(response)
-            servers = [RTCIceServer(item["url"]) for item in data.get("stunServers", [])]
-            turns = [RTCIceServer(item["url"], item.get("username"), item.get("password")) for item in data.get("turnServers", [])]
+            if data is None:
+                token = self._session_token()
+                configured = self._setting("stun_turn_url", "/bigbluebutton/api/stuns")
+                endpoint = urlunparse(urlparse(urljoin(f"{self.session.server}/", configured)))
+                separator = "&" if "?" in endpoint else "?"
+                endpoint = f"{endpoint}{separator}{urlencode({'sessionToken': token})}"
+                headers = {
+                    "Accept": "application/json, text/plain, */*",
+                    "Origin": self.session.server,
+                    "Referer": self.session.metadata.get("page_url", f"{self.session.server}/"),
+                    **{key: value for key, value in self.session.headers.items() if value},
+                }
+                request = Request(endpoint, headers=headers)
+                with urlopen(request, timeout=10) as response:
+                    data = json.load(response)
+                source = "fetched"
+                if not isinstance(data, dict):
+                    raise MediaConnectionError("BBB returned an invalid ICE credential response")
+                if data.get("returncode") == "FAILED":
+                    raise MediaConnectionError(data.get("message") or "BBB did not authorize ICE credential retrieval")
+                # Cache only in memory.  Loading/using a session must never
+                # rewrite its credential file.
+                self._settings["ice_servers"] = data
+            stun_items, turn_items = self._ice_items(data)
+            servers = [RTCIceServer(item.get("url") or item.get("urls")) for item in stun_items]
+            turns = [RTCIceServer(item.get("url") or item.get("urls"), item.get("username"), item.get("password")) for item in turn_items]
             # aiortc/aioice supports one TURN endpoint per peer connection. BBB
             # normally sends UDP first and TLS-over-TCP second. Prefer the
             # TLS endpoint: it survives Wi-Fi/VPN UDP filtering and mirrors
@@ -260,10 +341,15 @@ class _SFUAudioPublisher:
             selected_servers = turns if force_relay else [*servers, *turns]
             debug_trace(
                 "media.turn_credentials_loaded",
-                stun_servers=len(data.get("stunServers", [])),
+                stun_servers=len(servers),
                 turn_servers=len(turns),
                 force_relay=force_relay,
+                source=source,
             )
+            if not turns:
+                raise MediaConnectionError(
+                    "BBB did not return TURN credentials; export a fresh .sbc session while the BBB tab is in the meeting"
+                )
             if force_relay and not turns:
                 raise MediaConnectionError("BBB did not return a TURN server for relay-only media recovery")
             return RTCConfiguration(iceServers=selected_servers)
@@ -362,7 +448,7 @@ class _SFUAudioPublisher:
                     }))
             elif message.get("id") == "iceCandidate" and message.get("candidate"):
                 # Needed by BBB installations configured for trickle ICE.
-                await self.pc.addIceCandidate(message["candidate"])
+                await self._add_remote_candidate(self.pc, message["candidate"])
             elif message.get("id") == "webRTCAudioSuccess":
                 break
             elif message.get("id") in ("webRTCAudioError", "error"):
@@ -430,7 +516,7 @@ class _SFUAudioPublisher:
             async for raw in self.ws:
                 message = json.loads(raw)
                 if message.get("id") == "iceCandidate" and message.get("candidate") and self.pc:
-                    await self.pc.addIceCandidate(message["candidate"])
+                    await self._add_remote_candidate(self.pc, message["candidate"])
                 elif message.get("id") in ("webRTCAudioError", "error"):
                     raise MediaConnectionError(message.get("reason", "bbb-webrtc-sfu audio error"))
         except asyncio.CancelledError:
@@ -720,7 +806,7 @@ class _SFUListener(_SFUAudioPublisher):
                         "sdpOffer": self.pc.localDescription.sdp,
                     }))
             elif message.get("id") == "iceCandidate" and message.get("candidate"):
-                await self.pc.addIceCandidate(message["candidate"])
+                await self._add_remote_candidate(self.pc, message["candidate"])
             elif message.get("id") == "webRTCAudioSuccess":
                 break
             elif message.get("id") in ("webRTCAudioError", "error"):
@@ -894,17 +980,23 @@ class _SFUScreensharePublisher(_SFUAudioPublisher):
             if self._ready and self.connection_state in ("failed", "closed"):
                 self._schedule_reconnect()
 
+        # Match ScreenshareBroker: establish its signalling identity before
+        # producing the local browser-equivalent offer.
+        headers = [(key, value) for key, value in self.session.headers.items() if value]
+        self.ws = await websockets.connect(self._url(), extra_headers=headers, ping_interval=15, ping_timeout=20)
         offer = await self.pc.createOffer()
         await self.pc.setLocalDescription(offer)
         while self.pc.iceGatheringState != "complete":
             await asyncio.sleep(0.05)
-        headers = [(key, value) for key, value in self.session.headers.items() if value]
-        self.ws = await websockets.connect(self._url(), extra_headers=headers, ping_interval=15, ping_timeout=20)
         await self.ws.send(json.dumps(self._start_request(
             self._outgoing_sdp(self.pc.localDescription.sdp, force_relay=force_relay),
         )))
-        play_started = False
-        while not play_started:
+        # ``playStart`` is optional in BBB (and disabled in several stock
+        # deployments), so readiness is the accepted SDP answer + connected
+        # PeerConnection, not that optional media-flow notification.
+        answer_received = False
+        pending_candidates: list[dict[str, Any]] = []
+        while not answer_received:
             try:
                 raw = await asyncio.wait_for(self.ws.recv(), timeout=25)
             except TimeoutError as exc:
@@ -918,10 +1010,17 @@ class _SFUScreensharePublisher(_SFUAudioPublisher):
                 if not answer:
                     raise MediaConnectionError("BBB screenshare response did not contain an SDP answer")
                 await self.pc.setRemoteDescription(RTCSessionDescription(answer, "answer"))
+                answer_received = True
+                for candidate in pending_candidates:
+                    await self._add_remote_candidate(self.pc, candidate)
+                pending_candidates.clear()
             elif signal == "iceCandidate" and message.get("candidate"):
-                await self.pc.addIceCandidate(message["candidate"])
+                if answer_received:
+                    await self._add_remote_candidate(self.pc, message["candidate"])
+                else:
+                    pending_candidates.append(message["candidate"])
             elif signal == "playStart":
-                play_started = True
+                get_logger().debug("BBB visual screenshare media flow started")
             elif signal in ("error", "stopSharing"):
                 raise MediaConnectionError(message.get("reason", "bbb-webrtc-sfu screenshare stopped"))
         try:
@@ -945,7 +1044,7 @@ class _SFUScreensharePublisher(_SFUAudioPublisher):
                 message = json.loads(raw)
                 signal = message.get("id")
                 if signal == "iceCandidate" and message.get("candidate") and self.pc:
-                    await self.pc.addIceCandidate(message["candidate"])
+                    await self._add_remote_candidate(self.pc, message["candidate"])
                 elif signal == "stopSharing":
                     get_logger().info("BBB stopped the visual screenshare")
                     self._sharing_active = False

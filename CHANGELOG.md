@@ -1,5 +1,17 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.3.1 — Screenshare SFU reliability
+
+- Fixed BBB screenshare negotiation ordering to match `ScreenshareBroker`.
+- Made `playStart` optional; an accepted SDP answer and connected WebRTC peer
+  now establish the share on deployments where that event is disabled.
+- Added browser-JSON remote ICE candidate conversion and pre-answer candidate
+  buffering for aiortc.
+- Added passive extraction and in-memory refresh of BBB's short-lived
+  STUN/TURN credentials for content media.
+- Added explicit missing-TURN diagnostics rather than futile host-only ICE
+  retries.
+
 ## 0.3.0 — Dynamic visual screenshare framework
 
 - Added ``client.screenshare.start()`` / ``stop()`` for mutable Python visual

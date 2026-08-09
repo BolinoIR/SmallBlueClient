@@ -20,7 +20,8 @@ class ExtensionSessionFormatTests(unittest.TestCase):
         for field in (
             "audio_media_server", "listen_only_media_server", "full_audio_offering",
             "listen_only_offering", "transparent_listen_only", "camera_media_server",
-            "signal_candidates", "ice_gathering_timeout", "stun_turn_url",
+            "screenshare_media_server", "screenshare_bitrate", "signal_candidates",
+            "ice_gathering_timeout", "stun_turn_url", "ice_servers", "turn_servers",
         ):
             self.assertIn(field, source)
 

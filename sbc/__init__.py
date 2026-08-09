@@ -22,7 +22,7 @@ from .models import (BreakoutRoom, Camera, Caption, Chat, ChatMessage, ExternalV
 from .schema import BBBTable, SchemaCatalog, catalogs, schema
 from .core.exceptions import SBCError, SessionError, ConnectionError, GraphQLError, PermissionDenied, MutationNotFound, MutationValidationError, MediaStalledError
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 def client(session_file: str | Path, *, connect: bool = True, auto_join: bool = True, listen_only: bool = True) -> SBCClient:
     """Load an exported ``.sbc`` session and return an independent client."""
