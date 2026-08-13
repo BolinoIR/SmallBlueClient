@@ -26,6 +26,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender.tab?.id;
 
   if (message.type === "SBC_CAPTURE_UPDATED" && tabId !== undefined) {
+    // Do not retain a GraphQL-only session. A saved session becomes usable for
+    // SBC media only after the active BBB tab has completed its own audio
+    // connection and browser-authorized TURN/ICE request.
+    if (!message.media?.ready) {
+      sessions.delete(tabId);
+      sendResponse({ ok: true, skipped: "BBB media is not ready" });
+      return;
+    }
     attachCookies(message.session, sender.tab.url)
       .then((session) => {
         sessions.set(tabId, session);
@@ -46,6 +54,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       try {
         const capture = await chrome.tabs.sendMessage(tab.id, { type: "SBC_GET_CAPTURE" });
         if (!capture?.detected) return sendResponse({ error: "No authenticated BBB GraphQL session detected in this tab" });
+        if (!capture.media?.ready) {
+          return sendResponse({
+            error: "BBB media is not ready yet.",
+            media: capture.media || null,
+          });
+        }
         const session = await attachCookies(capture.session, tab.url);
         sessions.set(tab.id, session);
         sendResponse({ session });

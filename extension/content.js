@@ -27,7 +27,11 @@
     if (event.source !== window || event.data?.type !== "SBC_PAGE_CAPTURE_UPDATED") return;
     const capture = event.data.capture;
     if (capture?.detected && capture.session) {
-      chrome.runtime.sendMessage({ type: "SBC_CAPTURE_UPDATED", session: capture.session }).catch(() => {});
+      chrome.runtime.sendMessage({
+        type: "SBC_CAPTURE_UPDATED",
+        session: capture.session,
+        media: capture.media || null,
+      }).catch(() => {});
     }
   });
 

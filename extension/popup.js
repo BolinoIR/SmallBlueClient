@@ -16,7 +16,11 @@ async function refresh() {
   const response = await chrome.runtime.sendMessage({ type: "SBC_REFRESH_ACTIVE_SESSION" });
   if (response?.error) {
     activeSession = null;
-    statusElement.textContent = response.error;
+    if (response.media) {
+      renderMediaRequired(response.media);
+    } else {
+      statusElement.textContent = response.error;
+    }
     return;
   }
   activeSession = response.session;
@@ -24,6 +28,18 @@ async function refresh() {
   const meeting = activeSession.meeting_name || activeSession.meeting_id || "BBB meeting";
   statusElement.innerHTML = `<strong>BBB session detected</strong><br><span class="muted">${escapeHtml(user)} · ${escapeHtml(meeting)}</span>`;
   exportButton.disabled = false;
+}
+
+function renderMediaRequired(media) {
+  const reasons = Array.isArray(media?.reasons) ? media.reasons : [];
+  const detail = reasons.length
+    ? `<ul>${reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul>`
+    : "Join BBB audio before exporting.";
+  statusElement.innerHTML = [
+    "<strong>Connect BBB audio before export</strong>",
+    "<p class=\"muted\">Select <b>Listen only</b> or <b>Microphone</b> in BBB. Wait until BBB shows the headphone or microphone icon, then reopen this popup.</p>",
+    detail,
+  ].join("");
 }
 
 function escapeHtml(value) {
@@ -50,7 +66,7 @@ exportButton.addEventListener("click", async () => {
       conflictAction: "uniquify",
     });
     setTimeout(() => URL.revokeObjectURL(url), 1000);
-    statusElement.textContent = "Session exported. Keep the .sbc file private.";
+    statusElement.textContent = "Media-ready session exported. Keep the .sbc file private.";
   } catch (error) {
     statusElement.textContent = `Export failed: ${error.message}`;
   } finally {

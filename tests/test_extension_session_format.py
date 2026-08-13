@@ -25,6 +25,19 @@ class ExtensionSessionFormatTests(unittest.TestCase):
         ):
             self.assertIn(field, source)
 
+    def test_extractor_refuses_graphql_only_exports_until_bbb_media_is_ready(self):
+        page_source = (Path(__file__).resolve().parents[1] / "extension" / "page-capture.js").read_text(encoding="utf-8")
+        popup_source = (Path(__file__).resolve().parents[1] / "extension" / "popup.js").read_text(encoding="utf-8")
+        worker_source = (Path(__file__).resolve().parents[1] / "extension" / "background.js").read_text(encoding="utf-8")
+
+        for field in (
+            "sfu_audio_success", "peer_connection_state", "turn_credentials",
+            "webRTCAudioSuccess", "Connect to BBB audio as a listener or microphone first.",
+        ):
+            self.assertIn(field, page_source)
+        self.assertIn("Connect BBB audio before export", popup_source)
+        self.assertIn("BBB media is not ready yet.", worker_source)
+
     def test_session_loader_preserves_extracted_sfu_negotiation_settings(self):
         session = {
             "version": 1, "server": "https://bbb.example", "websocket_url": "wss://bbb.example/graphql",

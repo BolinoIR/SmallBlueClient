@@ -17,6 +17,20 @@
     // are required by content media on deployments which do not permit
     // private host ICE candidates to reach the SFU.
     iceServers: null,
+    // Export eligibility is based on browser-observed BBB media state, not
+    // merely on the GraphQL session. A GraphQL-only export cannot reliably
+    // create an SFU listener or microphone later in Python.
+    sfu: {
+      observed: false,
+      socketOpen: false,
+      startRequested: false,
+      startAccepted: false,
+      audioSuccess: false,
+      audioMode: null,
+      peerConnectionState: "new",
+      iceConnectionState: "new",
+      lastError: null,
+    },
   };
   const bbbWords = /\b(meeting|user|chat|voice|presentation|breakoutRoom|screenshare)\b/gi;
 
@@ -130,9 +144,49 @@
     try { observeIceResponse(url, JSON.parse(text)); } catch (_) {}
   }
 
-  const session = () => ({
-    detected: state.detected,
-    session: {
+  function hasFreshTurnCredentials() {
+    const credentials = state.iceServers;
+    if (!credentials?.turn_servers?.length) return false;
+    const expiresAt = Date.parse(credentials.expires_at || "");
+    return !Number.isFinite(expiresAt) || expiresAt > Date.now() + 15_000;
+  }
+
+  function mediaStatus() {
+    const sfu = state.sfu;
+    const reasons = [];
+    if (!sfu.observed || !sfu.startRequested) {
+      reasons.push("Connect to BBB audio as a listener or microphone first.");
+    }
+    if (!state.iceServers?.turn_servers?.length) {
+      reasons.push("Waiting for BBB to retrieve the meeting TURN/ICE credentials.");
+    } else if (!hasFreshTurnCredentials()) {
+      reasons.push("The captured TURN/ICE credentials have expired; reconnect audio and export a fresh session.");
+    }
+    if (sfu.startRequested && !sfu.audioSuccess) {
+      reasons.push("Waiting for BBB's SFU audio success signal.");
+    }
+    if (sfu.audioSuccess && sfu.peerConnectionState !== "connected") {
+      reasons.push("Waiting for the browser's WebRTC audio peer to connect.");
+    }
+    return {
+      ready: state.detected && sfu.socketOpen && sfu.audioSuccess
+        && sfu.peerConnectionState === "connected" && hasFreshTurnCredentials(),
+      audio_mode: sfu.audioMode,
+      sfu_socket_open: sfu.socketOpen,
+      sfu_audio_success: sfu.audioSuccess,
+      peer_connection_state: sfu.peerConnectionState,
+      ice_connection_state: sfu.iceConnectionState,
+      turn_credentials: hasFreshTurnCredentials(),
+      reasons,
+    };
+  }
+
+  const session = () => {
+    const media = mediaStatus();
+    return {
+      detected: state.detected,
+      media,
+      session: {
       version: 1,
       metadata: {
         exported_by: "SBC Session Extractor",
@@ -163,10 +217,15 @@
         ...(state.iceServers ? { ice_servers: clone(state.iceServers) } : {}),
         ...(state.meeting.screenShareBridge ? { screenshare_backend: state.meeting.screenShareBridge } : {}),
         ...(state.livekit.token ? { livekit: clone(state.livekit) } : {}),
+        // Kept as provenance for Python-side diagnostics. The popup refuses
+        // export until this capture is ready, so this is never a GraphQL-only
+        // session package.
+        media_capture: clone(media),
       },
       headers: {},
     },
-  });
+    };
+  };
 
   function visit(value, seen = new WeakSet()) {
     if (!value || typeof value !== "object" || seen.has(value)) return;
@@ -201,6 +260,53 @@
     if (hits.length >= 2 && /\b(subscription|mutation|query)\b/i.test(String(query))) state.detected = true;
   }
 
+  function isSfuUrl(url) {
+    try { return /\/bbb-webrtc-sfu\/?$/i.test(new URL(String(url), location.href).pathname); } catch (_) { return false; }
+  }
+
+  function observeSfuOutgoing(payload) {
+    if (payload?.id !== "start" || payload?.type !== "audio") return;
+    state.sfu = {
+      ...state.sfu,
+      observed: true,
+      startRequested: true,
+      startAccepted: false,
+      audioSuccess: false,
+      audioMode: payload.role === "recv" ? "listener" : "microphone",
+      peerConnectionState: "new",
+      iceConnectionState: "new",
+      lastError: null,
+    };
+  }
+
+  function observeSfuIncoming(payload) {
+    if (!payload || typeof payload !== "object") return;
+    if (payload.id === "startResponse" && payload.response === "accepted") {
+      state.sfu.startAccepted = true;
+    } else if (payload.id === "webRTCAudioSuccess") {
+      state.sfu.audioSuccess = true;
+    } else if (payload.id === "webRTCAudioError" || payload.id === "error") {
+      state.sfu.lastError = payload.reason || "BBB SFU rejected the audio connection";
+    }
+  }
+
+  function observePeerConnection(peer) {
+    const update = () => {
+      // BBB creates its audio RTCPeerConnection immediately after sending the
+      // SFU start request. Ignore unrelated peers until that exact sequence
+      // has been observed.
+      if (!state.sfu.startRequested) return;
+      state.sfu.peerConnectionState = peer.connectionState || "new";
+      state.sfu.iceConnectionState = peer.iceConnectionState || "new";
+      if (state.sfu.peerConnectionState === "failed" || state.sfu.peerConnectionState === "closed") {
+        state.sfu.lastError = `Browser WebRTC state: ${state.sfu.peerConnectionState}`;
+      }
+      notify();
+    };
+    peer.addEventListener("connectionstatechange", update);
+    peer.addEventListener("iceconnectionstatechange", update);
+  }
+
   const NativeWebSocket = window.WebSocket;
   function ObservedWebSocket(...args) {
     const socket = new NativeWebSocket(...args);
@@ -209,15 +315,33 @@
       state.websocketUrl = url;
       state.protocol = Array.isArray(protocols) ? (protocols.includes("graphql-transport-ws") ? "graphql-transport-ws" : protocols[0]) : (protocols || "graphql-transport-ws");
     }
+    const sfuSocket = isSfuUrl(url);
+    if (sfuSocket) {
+      state.sfu.observed = true;
+      socket.addEventListener("open", () => { state.sfu.socketOpen = true; notify(); });
+      socket.addEventListener("close", () => {
+        state.sfu.socketOpen = false;
+        state.sfu.audioSuccess = false;
+        notify();
+      });
+      socket.addEventListener("error", () => { state.sfu.lastError = "BBB SFU WebSocket error"; notify(); });
+    }
     const nativeSend = socket.send;
     socket.send = function (message) {
-      try { observeGraphqlPayload(typeof message === "string" ? JSON.parse(message) : null); notify(); } catch (_) {}
+      try {
+        const payload = typeof message === "string" ? JSON.parse(message) : null;
+        observeGraphqlPayload(payload);
+        if (sfuSocket) observeSfuOutgoing(payload);
+        notify();
+      } catch (_) {}
       return nativeSend.call(this, message);
     };
     socket.addEventListener("message", async (event) => {
       try {
         const text = typeof event.data === "string" ? event.data : await event.data.text();
-        visit(JSON.parse(text));
+        const payload = JSON.parse(text);
+        visit(payload);
+        if (sfuSocket) observeSfuIncoming(payload);
         notify();
       } catch (_) {}
     });
@@ -226,6 +350,20 @@
   ObservedWebSocket.prototype = NativeWebSocket.prototype;
   Object.setPrototypeOf(ObservedWebSocket, NativeWebSocket);
   window.WebSocket = ObservedWebSocket;
+
+  // This observes state changes only. It does not create, alter, or control
+  // BBB's WebRTC peer; BBB remains solely responsible for its media flow.
+  const NativeRTCPeerConnection = window.RTCPeerConnection;
+  if (NativeRTCPeerConnection) {
+    function ObservedRTCPeerConnection(...args) {
+      const peer = new NativeRTCPeerConnection(...args);
+      observePeerConnection(peer);
+      return peer;
+    }
+    ObservedRTCPeerConnection.prototype = NativeRTCPeerConnection.prototype;
+    Object.setPrototypeOf(ObservedRTCPeerConnection, NativeRTCPeerConnection);
+    window.RTCPeerConnection = ObservedRTCPeerConnection;
+  }
   // BBB source fetches STUN/TURN data with ``fetch(..., {credentials:
   // 'include'})``. Observe that already-authorized browser response so a
   // fresh exported session has the exact short-lived ICE configuration.

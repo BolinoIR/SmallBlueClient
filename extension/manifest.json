@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "SBC Session Extractor",
-  "version": "1.0.8",
-  "description": "Exports authenticated BigBlueButton browser sessions for the SmallBlueClient Python library.",
+  "version": "1.0.9",
+  "description": "Exports media-ready authenticated BigBlueButton browser sessions for the SmallBlueClient Python library.",
   "permissions": ["activeTab", "cookies", "downloads", "storage"],
   "host_permissions": ["*://*/*"],
   "background": { "service_worker": "background.js", "type": "module" },
