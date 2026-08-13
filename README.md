@@ -96,9 +96,11 @@ BBB compatibility results.
 
 1. Load the [`extension/`](extension/README.md) directory through
    `chrome://extensions` → **Load unpacked**.
-2. Join your BBB meeting normally and open **SBC Session Extractor**.
-3. Export the detected `.sbc` file and keep it private.
-4. Start writing Python:
+2. Join your BBB meeting and select **Listen only** or **Microphone**.
+3. Wait until BBB displays the headphone or microphone icon, then open
+   **SBC Session Extractor**.
+4. Export the media-ready `.sbc` file and keep it private.
+5. Start writing Python:
 
 ```python
 import sbc

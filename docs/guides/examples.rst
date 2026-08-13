@@ -16,6 +16,10 @@ SmallBlueClient has a compact API for simple scripts and a complete event system
 for long-running bots. Every example starts from a session exported by the SBC
 Session Extractor.
 
+Before exporting, select BBB's **Listen only** or **Microphone** mode and wait
+for its headphone/microphone icon. The extractor enables `.sbc` export only
+after it observes a connected SFU peer and fresh TURN/ICE credentials.
+
 Basic chat
 ----------
 

@@ -1,5 +1,14 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.4.2 — Media-ready session extraction
+
+- The Chrome session extractor now blocks `.sbc` exports until BBB has
+  connected **Listen only** or **Microphone** audio, the SFU reports
+  `webRTCAudioSuccess`, the browser peer is connected, and fresh TURN/ICE
+  credentials have been observed.
+- Added clear popup guidance when the user must choose an audio mode or wait
+  for BBB media/ICE negotiation to finish.
+
 ## 0.4.1 — Incoming audio capture activation
 
 - Made ``client.audio.record()`` and ``client.transcription.start()`` open the
