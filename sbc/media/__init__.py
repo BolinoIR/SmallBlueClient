@@ -177,6 +177,7 @@ class _SFUAudioPublisher:
         # listener. MediaController assigns this when it exposes capture.
         self.on_audio_frame: Any | None = None
         self._receive_tasks: set[asyncio.Task[Any]] = set()
+        self._receive_track_ids: set[int] = set()
     def _run(self): asyncio.set_event_loop(self.loop); self.loop.run_forever()
     def submit(self, coroutine): return asyncio.run_coroutine_threadsafe(coroutine, self.loop)
     def _url(self) -> str:
@@ -409,13 +410,6 @@ class _SFUAudioPublisher:
         self._audio_sender = self.pc.addTrack(track) if offering else None
         connected = asyncio.Event()
 
-        @self.pc.on("track")
-        def on_track(remote_track: Any) -> None:
-            if getattr(remote_track, "kind", None) != "audio":
-                return
-            task = asyncio.create_task(self._consume_incoming_audio_track(remote_track))
-            self._receive_tasks.add(task)
-            task.add_done_callback(self._receive_tasks.discard)
         @self.pc.on("connectionstatechange")
         def on_connection_state_change():
             self.connection_state = self.pc.connectionState
@@ -480,6 +474,12 @@ class _SFUAudioPublisher:
             raise MediaConnectionError(f"bbb-webrtc-sfu WebRTC connection failed (state={self.connection_state}, ice={self.pc.iceConnectionState})")
         self._ready = True
         self._active_force_relay = force_relay
+        # Do not install a media receiver while BBB is still negotiating the
+        # audio m-line.  The 0.3.2 implementation negotiated first and only
+        # then consumed the remote track.  Keeping that ordering is critical
+        # for SFUs which reject a receiver that starts pulling RTP before the
+        # ``webRTCAudioSuccess`` acknowledgement.
+        await self._activate_audio_capture()
         debug_trace("media.sfu_audio_connected", connection_state=self.connection_state, ice_state=self.pc.iceConnectionState)
         self._signal_task = asyncio.create_task(self._listen_for_signals())
         # BBB's own BaseBroker uses JSON ``{id: 'ping'}`` heartbeats rather
@@ -499,6 +499,27 @@ class _SFUAudioPublisher:
         except Exception as exc:
             if not self._stopping:
                 get_logger().debug("BBB full-audio receive track ended: %s", exc)
+
+    async def _activate_audio_capture(self) -> None:
+        """Begin consuming already-negotiated remote audio tracks.
+
+        This intentionally runs *after* the source-compatible BBB WebRTC
+        handshake completes.  It has no effect until ``on_audio_frame`` is
+        configured by :meth:`MediaController.start_audio_capture`.
+        """
+        if self.on_audio_frame is None or self.pc is None:
+            return
+        for receiver in self.pc.getReceivers():
+            track = getattr(receiver, "track", None)
+            track_id = id(track)
+            if track is None or getattr(track, "kind", None) != "audio" or track_id in self._receive_track_ids:
+                continue
+            task = asyncio.create_task(self._consume_incoming_audio_track(track))
+            self._receive_tasks.add(task)
+            self._receive_track_ids.add(track_id)
+            task.add_done_callback(lambda completed, track_id=track_id: (
+                self._receive_tasks.discard(completed), self._receive_track_ids.discard(track_id)
+            ))
 
     def _notify_connection_ready(self) -> None:
         """Reapply the BBB input-mode UI state after an SFU reconnection."""
@@ -717,6 +738,7 @@ class _SFUAudioPublisher:
     async def _dispose(self) -> None:
         tasks = tuple(self._receive_tasks)
         self._receive_tasks.clear()
+        self._receive_track_ids.clear()
         for task in tasks:
             task.cancel()
         if tasks:
@@ -766,6 +788,7 @@ class _SFUListener(_SFUAudioPublisher):
         # can replace this callback with their own metadata resolver.
         self.on_audio_frame: Any | None = None
         self._receive_tasks: set[asyncio.Task[Any]] = set()
+        self._receive_track_ids: set[int] = set()
 
     async def join(self) -> None:
         await self.close()
@@ -805,14 +828,6 @@ class _SFUListener(_SFUAudioPublisher):
 
         self.pc = RTCPeerConnection(self._ice_configuration(force_relay=force_relay))
         connected = asyncio.Event()
-
-        @self.pc.on("track")
-        def on_track(track: Any) -> None:
-            if getattr(track, "kind", None) != "audio":
-                return
-            task = asyncio.create_task(self._consume_audio_track(track))
-            self._receive_tasks.add(task)
-            task.add_done_callback(self._receive_tasks.discard)
 
         @self.pc.on("connectionstatechange")
         def on_connection_state_change():
@@ -889,6 +904,7 @@ class _SFUListener(_SFUAudioPublisher):
         self._active_force_relay = force_relay
         self._signal_task = asyncio.create_task(self._listen_for_signals())
         self._notify_connection_ready()
+        await self._activate_audio_capture()
 
     async def _consume_audio_track(self, track: Any) -> None:
         """Forward the decoded listener track without blocking WebRTC I/O."""
@@ -904,9 +920,31 @@ class _SFUListener(_SFUAudioPublisher):
             if self._listener_active and not self._stopping:
                 get_logger().debug("BBB listener receive track ended: %s", exc)
 
+    async def _activate_audio_capture(self) -> None:
+        """Attach capture after BBB has accepted the listener session.
+
+        ``track.recv()`` must not be called during the listener's SDP/ICE
+        exchange.  Some BBB SFUs immediately tear down the peer when a
+        receive loop is started before their ``webRTCAudioSuccess`` signal.
+        """
+        if self.on_audio_frame is None or self.pc is None:
+            return
+        for receiver in self.pc.getReceivers():
+            track = getattr(receiver, "track", None)
+            track_id = id(track)
+            if track is None or getattr(track, "kind", None) != "audio" or track_id in self._receive_track_ids:
+                continue
+            task = asyncio.create_task(self._consume_audio_track(track))
+            self._receive_tasks.add(task)
+            self._receive_track_ids.add(track_id)
+            task.add_done_callback(lambda completed, track_id=track_id: (
+                self._receive_tasks.discard(completed), self._receive_track_ids.discard(track_id)
+            ))
+
     async def _dispose(self) -> None:
         tasks = tuple(self._receive_tasks)
         self._receive_tasks.clear()
+        self._receive_track_ids.clear()
         for task in tasks:
             task.cancel()
         if tasks:
@@ -1765,7 +1803,13 @@ class MediaController:
             if not any(stream.type == kind for stream in container.streams):
                 raise MediaConnectionError(f"the selected file has no {kind} stream")
         return path
-    def _join_listener(self) -> None:
+    def _join_listener(self, *, capture: bool = False) -> None:
+        """Join BBB's listener room without altering its WebRTC handshake.
+
+        The normal automatic listener join deliberately leaves capture off.
+        Incoming audio is attached only when the public ``client.audio`` API
+        explicitly requests it, after the server has accepted the session.
+        """
         backend = self._media_backend()
         if backend.get("audioBridge") != "bbb-webrtc-sfu":
             raise MediaConnectionError(f"BBB listener sessions are unavailable for audio backend {backend.get('audioBridge')!r}")
@@ -1773,8 +1817,10 @@ class MediaController:
         if self._listener is None:
             self._listener = _SFUListener(self.client.session)
             self._listener.on_connection_ready = self._restore_input_mode
-            self._listener.on_audio_frame = self._capture_listener_audio
         self._listener.submit(self._listener.join()).result()
+        if capture:
+            self._listener.on_audio_frame = self._capture_listener_audio
+            self._listener.submit(self._listener._activate_audio_capture()).result()
 
     def start_audio_capture(self) -> None:
         """Connect the correct BBB receive backend for ``client.audio``."""
@@ -1783,9 +1829,14 @@ class MediaController:
             # A full-audio peer already receives the mix after it is active;
             # otherwise use BBB's actual listener endpoint.
             if self._sfu is not None and self._sfu._ready:
+                self._sfu.on_audio_frame = self._capture_listener_audio
+                self._sfu.submit(self._sfu._activate_audio_capture()).result()
                 return
             if self._listener is None or not self._listener._ready:
-                self._join_listener()
+                self._join_listener(capture=True)
+            else:
+                self._listener.on_audio_frame = self._capture_listener_audio
+                self._listener.submit(self._listener._activate_audio_capture()).result()
             return
         if backend.get("livekit_token"):
             url, token = self._credentials()
