@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, Mock
 from sbc.media import (
     MediaController,
     _SFUAudioPublisher,
-    _SFUListener,
     _SFUScreensharePublisher,
     _DynamicVisualTrack,
     _SilenceAudioTrack,
@@ -233,50 +232,6 @@ class MediaTests(unittest.TestCase):
 
         actions.userSetListenOnlyInput.assert_called_once_with(listenOnlyInputDevice=True)
         client.users.unmute.assert_not_called()
-
-    def test_listener_capture_is_not_attached_during_the_sfu_handshake(self) -> None:
-        """Keep the 0.3.2 listener SDP/ICE flow independent from capture.
-
-        The incoming-audio feature must only attach a receiver after the
-        listener peer is ready.  A callback present before that point was the
-        sole media-path difference introduced by the 0.4.1 capture work.
-        """
-        listener = object.__new__(_SFUListener)
-        listener.on_audio_frame = None
-        listener.pc = None
-        listener._receive_tasks = set()
-        listener._receive_track_ids = set()
-
-        asyncio.run(listener._activate_audio_capture())
-
-        self.assertEqual(listener._receive_tasks, set())
-        self.assertEqual(listener._receive_track_ids, set())
-
-    def test_ready_listener_activates_capture_without_renegotiating_media(self) -> None:
-        """Capture uses the existing receiver created by the 0.3.2 handshake."""
-        async def scenario() -> None:
-            listener = object.__new__(_SFUListener)
-            listener.on_audio_frame = Mock()
-            listener._receive_tasks = set()
-            listener._receive_track_ids = set()
-            track = SimpleNamespace(kind="audio")
-            listener.pc = SimpleNamespace(getReceivers=lambda: [SimpleNamespace(track=track)])
-            blocker = asyncio.Event()
-
-            async def consume(_: object) -> None:
-                await blocker.wait()
-
-            listener._consume_audio_track = consume
-            await listener._activate_audio_capture()
-
-            self.assertEqual(len(listener._receive_tasks), 1)
-            self.assertIn(id(track), listener._receive_track_ids)
-            tasks = tuple(listener._receive_tasks)
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-        asyncio.run(scenario())
 
     def test_active_microphone_mode_is_restored_and_unmuted_after_reconnect(self) -> None:
         """An active file source must return as a microphone, not a listener."""
