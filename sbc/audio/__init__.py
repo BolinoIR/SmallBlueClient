@@ -360,7 +360,16 @@ class AudioController:
         # packed interleaved layout expected by WAV and Whisper.
         if getattr(data, "ndim", 1) == 2 and data.shape[0] == channels:
             data = data.T.reshape(-1)
-        data = np.asarray(data, dtype=np.int16)
+        data = np.asarray(data)
+        # Decoded Opus frames are commonly ``fltp``: normalised floating
+        # point samples in the [-1.0, 1.0] range.  Casting those directly to
+        # int16 turns almost every non-zero sample into 0, producing a silent
+        # recording and giving Whisper nothing to transcribe.  Preserve their
+        # amplitude by explicitly converting normalised PCM to signed 16-bit.
+        if np.issubdtype(data.dtype, np.floating):
+            data = np.rint(np.clip(data, -1.0, 1.0) * 32767.0).astype(np.int16)
+        else:
+            data = data.astype(np.int16, copy=False)
         return self.ingest(
             data.tobytes(), sample_rate=int(frame.sample_rate or 48_000), channels=channels,
             user_id=user_id, user_name=user_name, mixed=mixed, source=source,

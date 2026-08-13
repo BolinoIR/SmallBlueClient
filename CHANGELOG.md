@@ -1,5 +1,13 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.4.3 ? Experimental incoming-audio capture
+
+- Fixed conversion of normalized floating-point decoded WebRTC audio into signed 16-bit PCM before recording and local transcription. This prevents Opus receive frames from being written as effectively silent WAV data.
+- ``live_transcript_textboard.py`` now saves captured audio and writes TXT/SRT transcript exports when it exits. It also prints completed transcript segments so capture/transcription and board rendering can be diagnosed separately.
+- Added transcription lifecycle logging and regression coverage for decoded floating-point PCM input.
+
+> **Experimental:** incoming BBB audio capture and local transcription may not work on every deployment. SFU behaviour, media permissions, codecs, networking, and local inference performance all vary.
+
 ## 0.4.2 — Media-ready session extraction
 
 - The Chrome session extractor now blocks `.sbc` exports until BBB has

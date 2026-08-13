@@ -6,6 +6,13 @@ SBC separates local media publishing from incoming BBB audio.  Use
 use ``client.audio`` to receive decoded PCM and ``client.transcription`` to
 run local speech-to-text.
 
+.. warning::
+
+   Incoming audio capture and local transcription are **experimental**.
+   BigBlueButton deployments differ in their SFU, media permissions, codecs,
+   and network configuration. A connected listener does not guarantee that a
+   recording or transcription will be available.
+
 Capture and record audio
 ------------------------
 
@@ -31,7 +38,9 @@ Live PCM frames
 ---------------
 
 Use a listener for immediate processing, visualization, a custom recognizer,
-or a websocket relay. Frames are signed 16-bit interleaved PCM.
+or a websocket relay. Frames are signed 16-bit interleaved PCM. SBC converts
+normalized floating-point frames produced by decoded Opus media into this PCM
+representation before forwarding them to recorders and speech engines.
 
 .. code-block:: python
 

@@ -17,6 +17,8 @@ docs/_build/
 # Exported authenticated sessions and local media fixtures
 *.sbc
 examples/test.mp3
+examples/recordings/
+.cache/
 sbc-diagnostic-report*.json
 .sbc-diagnostic-*.json
 

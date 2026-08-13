@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 from sbc.media import (
     MediaController,
     _SFUAudioPublisher,
+    _SFUListener,
     _SFUScreensharePublisher,
     _DynamicVisualTrack,
     _SilenceAudioTrack,
@@ -48,12 +49,13 @@ class MediaTests(unittest.TestCase):
         self.assertNotIn("typ host", relay_sdp)
         self.assertNotIn("typ srflx", relay_sdp)
 
-    def test_legacy_bbb_sha1_fingerprint_is_validated_not_ignored(self) -> None:
+    def test_legacy_bbb_fingerprints_are_validated_not_ignored(self) -> None:
         import aiortc.rtcdtlstransport as dtls
         _enable_bbb_legacy_sha1_fingerprint()
         # The compatibility path extends aiortc's normal certificate digest
         # validation map; it never disables remote identity validation.
         self.assertIn("sha-1", dtls.X509_DIGEST_ALGORITHMS)
+        self.assertIn("sha-224", dtls.X509_DIGEST_ALGORITHMS)
 
     def test_new_session_snapshot_preserves_all_audio_negotiation_settings(self) -> None:
         settings = {
@@ -108,6 +110,17 @@ class MediaTests(unittest.TestCase):
             "clientSessionNumber": 9, "transparentListenOnly": False,
             "sdpOffer": "v=0\\r\\n", "mediaServer": "mediasoup",
         })
+
+    def test_listener_contract_matches_bbb_transparent_listen_only_source_rules(self) -> None:
+        """BBB uses passive-sendrecv, not recv, for transparent listeners."""
+        listener = object.__new__(_SFUListener)
+        listener.session = SimpleNamespace(snapshot={"bbb_webrtc_sfu": {}})
+        self.assertEqual(listener._listener_contract(), ("recv", False))
+
+        listener.session = SimpleNamespace(snapshot={"bbb_webrtc_sfu": {
+            "transparent_listen_only": True,
+        }})
+        self.assertEqual(listener._listener_contract(), ("passive-sendrecv", True))
 
     def test_media_status_exposes_outbound_audio_diagnostics_without_a_connection(self) -> None:
         media = object.__new__(MediaController)

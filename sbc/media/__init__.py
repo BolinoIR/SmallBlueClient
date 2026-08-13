@@ -26,22 +26,30 @@ SCREENSHARE_CONTEXT = "query SBCScreenshareContext{meeting{meetingId screenShare
 
 
 def _enable_bbb_legacy_sha1_fingerprint() -> None:
-    """Allow validation of legacy BBB SFU ``sha-1`` DTLS fingerprints.
+    """Allow validation of BBB SFU SHA-1 and SHA-224 DTLS fingerprints.
 
-    Some BBB 3.0 deployments still advertise only a ``sha-1`` certificate
-    fingerprint in the SFU-generated SDP.  Chromium accepts that WebRTC SDP;
-    modern aiortc deliberately supports only SHA-256/384/512 by default and
-    therefore rejects an otherwise successful ICE connection with
-    ``DTLS handshake failed (fingerprint mismatch)``.  Registering SHA-1 here
-    does *not* bypass validation: aiortc still computes SHA-1 from the peer's
-    certificate and requires an exact match with the SDP fingerprint.
+    BBB SFU deployments may advertise ``sha-1`` or ``sha-224`` certificate
+    fingerprints in generated SDP. Chromium accepts both, while the aiortc
+    default map only includes SHA-256/384/512. Without the corresponding
+    digest implementation, ICE completes and DTLS then fails with a misleading
+    ``fingerprint mismatch``. Registering these algorithms does *not* bypass
+    validation: aiortc still computes the advertised digest from the peer's
+    certificate and requires an exact match.
     """
     import aiortc.rtcdtlstransport as dtls
     from cryptography.hazmat.primitives import hashes
 
-    if "sha-1" not in dtls.X509_DIGEST_ALGORITHMS:
-        dtls.X509_DIGEST_ALGORITHMS["sha-1"] = hashes.SHA1()
-        debug_trace("media.legacy_sha1_fingerprint_enabled")
+    legacy_algorithms = {
+        "sha-1": hashes.SHA1,
+        "sha-224": hashes.SHA224,
+    }
+    enabled: list[str] = []
+    for name, algorithm in legacy_algorithms.items():
+        if name not in dtls.X509_DIGEST_ALGORITHMS:
+            dtls.X509_DIGEST_ALGORITHMS[name] = algorithm()
+            enabled.append(name)
+    if enabled:
+        debug_trace("media.legacy_fingerprint_algorithms_enabled", algorithms=enabled)
 
 
 class MediaConnectionError(ConnectionError):
@@ -177,6 +185,7 @@ class _SFUAudioPublisher:
         # listener. MediaController assigns this when it exposes capture.
         self.on_audio_frame: Any | None = None
         self._receive_tasks: set[asyncio.Task[Any]] = set()
+        self._frames_received = 0
     def _run(self): asyncio.set_event_loop(self.loop); self.loop.run_forever()
     def submit(self, coroutine): return asyncio.run_coroutine_threadsafe(coroutine, self.loop)
     def _url(self) -> str:
@@ -767,6 +776,20 @@ class _SFUListener(_SFUAudioPublisher):
         self.on_audio_frame: Any | None = None
         self._receive_tasks: set[asyncio.Task[Any]] = set()
 
+    def _listener_contract(self) -> tuple[str, bool]:
+        """Return BBB's source-defined listener role and transparency flag.
+
+        ``SFUAudioBridge.getBrokerRole`` uses the normal ``recv`` role only
+        when transparent listen-only is disabled.  With
+        ``media.transparentListenOnly`` enabled, BBB creates a
+        ``passive-sendrecv`` peer instead, even though it does not acquire a
+        microphone.  That role is part of the SFU signalling contract; using
+        ``recv`` for a transparent-listen-only meeting can produce an accepted
+        SDP exchange followed by an immediate DTLS/ICE failure.
+        """
+        transparent = bool(self._setting("transparent_listen_only", False))
+        return ("passive-sendrecv" if transparent else "recv", transparent)
+
     async def join(self) -> None:
         await self.close()
         self._stopping = False
@@ -810,6 +833,7 @@ class _SFUListener(_SFUAudioPublisher):
         def on_track(track: Any) -> None:
             if getattr(track, "kind", None) != "audio":
                 return
+            get_logger().info("BBB listener received the conference audio track")
             task = asyncio.create_task(self._consume_audio_track(track))
             self._receive_tasks.add(task)
             task.add_done_callback(self._receive_tasks.discard)
@@ -826,6 +850,7 @@ class _SFUListener(_SFUAudioPublisher):
         # sends an offer and the client replies with ``subscriberAnswer``.
         # Some installations flip it to true, so support both source modes.
         offering = bool(self._setting("listen_only_offering", False))
+        role, transparent = self._listener_contract()
         local_offer = None
         if offering:
             self.pc.addTransceiver("audio", direction="recvonly")
@@ -834,14 +859,19 @@ class _SFUListener(_SFUAudioPublisher):
             while self.pc.iceGatheringState != "complete":
                 await asyncio.sleep(0.05)
             local_offer = self.pc.localDescription.sdp
-        get_logger().info("Negotiating BBB listener SFU session (offering=%s)", offering)
+        get_logger().info(
+            "Negotiating BBB listener SFU session (offering=%s, role=%s, transparent=%s)",
+            offering,
+            role,
+            transparent,
+        )
         headers = [(key, value) for key, value in self.session.headers.items() if value]
         self.ws = await websockets.connect(self._url(), extra_headers=headers, ping_interval=15, ping_timeout=20, close_timeout=2)
         self._session_number += 1
         message = {
-            "id": "start", "type": "audio", "role": "recv",
+            "id": "start", "type": "audio", "role": role,
             "clientSessionNumber": self._session_number,
-            "transparentListenOnly": False,
+            "transparentListenOnly": transparent,
         }
         if local_offer:
             message["sdpOffer"] = self._outgoing_sdp(local_offer, force_relay=force_relay)
@@ -867,10 +897,18 @@ class _SFUListener(_SFUAudioPublisher):
                     if not sdp_offer:
                         raise MediaConnectionError("BBB listener response did not contain an SDP offer")
                     await self.pc.setRemoteDescription(RTCSessionDescription(sdp_offer, "offer"))
+                    # BBB's WebRtcPeer.processOffer calls _processMediaStreams
+                    # for the passive-sendrecv mode, which changes each
+                    # transceiver's direction to sendrecv without opening a
+                    # microphone. Mirror that negotiation behaviour exactly.
+                    if transparent:
+                        for transceiver in self.pc.getTransceivers():
+                            if getattr(transceiver, "kind", None) == "audio":
+                                transceiver.direction = "sendrecv"
                     answer = await self.pc.createAnswer()
                     await self.pc.setLocalDescription(answer)
                     await self.ws.send(json.dumps({
-                        "id": "subscriberAnswer", "type": "audio", "role": "recv",
+                        "id": "subscriberAnswer", "type": "audio", "role": role,
                         "sdpOffer": self._outgoing_sdp(self.pc.localDescription.sdp, force_relay=force_relay),
                     }))
             elif message.get("id") == "iceCandidate" and message.get("candidate"):
@@ -895,6 +933,9 @@ class _SFUListener(_SFUAudioPublisher):
         try:
             while self._listener_active and not self._stopping:
                 frame = await track.recv()
+                self._frames_received += 1
+                if self._frames_received == 1:
+                    get_logger().info("BBB listener is receiving conference audio frames")
                 callback = self.on_audio_frame
                 if callback is not None:
                     callback(frame)

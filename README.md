@@ -77,6 +77,10 @@ with sbc.client("teacher.sbc", listen_only=True) as client:
 The BBB WebRTC SFU listener provides a conference mix. LiveKit participant
 tracks are recorded separately when the BBB deployment exposes them.
 
+> **Experimental:** incoming audio capture and local transcription depend on
+> the BBB deployment's SFU, codec, permission, and network behaviour. They may
+> not work on every server.
+
 See the full migration history in [CHANGELOG.md](CHANGELOG.md).
 
 ### Development and community

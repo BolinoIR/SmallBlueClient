@@ -12,6 +12,7 @@ from queue import Queue
 from typing import Any, Callable, Iterable
 
 from ..audio import AudioFrame
+from ..core.logging import get_logger
 from ..types import TranscriptionModel, enum_value
 
 
@@ -100,6 +101,7 @@ class LiveTranscription:
         if self._active:
             return self
         self._engine = self._load_engine()
+        get_logger().info("Loaded local transcription model: %s", self.model_name)
         self._active = True
         self._stop.clear()
         self.controller.audio.add_listener(self._receive)
@@ -131,6 +133,11 @@ class LiveTranscription:
             if self._durations[key] >= self.chunk_seconds:
                 payload = self._buffers.pop(key)
                 self._durations.pop(key, None)
+                get_logger().debug(
+                    "Queued %.2fs of incoming audio for transcription (%s)",
+                    sum(item.duration for item in payload),
+                    key,
+                )
                 self._jobs.put((key, payload))
 
     def flush(self) -> None:
@@ -168,9 +175,14 @@ class LiveTranscription:
                 continue
             path = self._write_wav(frames)
             try:
+                get_logger().info(
+                    "Transcribing %.2fs of incoming BBB audio",
+                    sum(frame.duration for frame in frames),
+                )
                 result = self._engine.transcribe(str(path), language=self.language, vad_filter=True)
                 source_segments, info = result
                 base = frames[0].timestamp
+                emitted = 0
                 for item in source_segments:
                     text = str(getattr(item, "text", "")).strip()
                     if not text:
@@ -186,7 +198,10 @@ class LiveTranscription:
                     with self._lock:
                         self._segments.append(segment)
                     self.controller._emit(segment)
+                    emitted += 1
+                get_logger().info("BBB audio transcription produced %s segment(s)", emitted)
             except Exception as exc:
+                get_logger().warning("BBB audio transcription failed: %s", exc)
                 self.controller.client.emit("error", exc)
             finally:
                 path.unlink(missing_ok=True)

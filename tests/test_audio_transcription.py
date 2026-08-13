@@ -10,6 +10,8 @@ import wave
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
+
 from sbc.audio import AudioController
 from sbc.transcription import LiveTranscription, TranscriptSegment, TranscriptionController
 from sbc.asyncio import _AsyncAudioController
@@ -63,6 +65,19 @@ class AudioCaptureTests(unittest.TestCase):
         self.assertEqual(track.user_id, "u-1")
         self.assertEqual(track.frames_received, 1)
         self.assertIn(("audio_frame", frame), self.client.events)
+
+    def test_ingest_av_frame_scales_normalized_float_pcm(self) -> None:
+        """PyAV's decoded ``fltp`` frames must not become silent PCM."""
+        frame = SimpleNamespace(
+            # Planar mono: two normalised floating-point samples.
+            to_ndarray=lambda: np.array([[0.5, -0.5]], dtype=np.float32),
+            layout=SimpleNamespace(channels=(object(),)),
+            sample_rate=48_000,
+        )
+        captured = self.audio.ingest_av_frame(frame, mixed=True)
+        samples = np.frombuffer(captured.pcm, dtype=np.int16)
+        self.assertGreater(samples[0], 16_000)
+        self.assertLess(samples[1], -16_000)
 
     def test_recording_starts_capture_backend_once(self) -> None:
         client = _MediaClient()
