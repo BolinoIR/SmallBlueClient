@@ -252,6 +252,21 @@ class AudioController:
         self._listeners: list[Callable[[AudioFrame], None]] = []
         self._tracks: dict[str, AudioTrackInfo] = {}
         self._lock = threading.RLock()
+        self._capture_started = False
+
+    def start(self) -> None:
+        """Ensure an incoming-audio backend is connected for capture.
+
+        Standard BBB SFU sessions use a listener peer when no active media
+        peer already exists. LiveKit sessions connect a receive-capable room
+        with automatic participant-track subscription.
+        """
+        if self._capture_started:
+            return
+        starter = getattr(getattr(self.client, "media", None), "start_audio_capture", None)
+        if callable(starter):
+            starter()
+        self._capture_started = True
 
     def add_listener(self, listener: Callable[[AudioFrame], None]) -> Callable[[AudioFrame], None]:
         with self._lock:
@@ -280,6 +295,7 @@ class AudioController:
         Separate participant files are the default.  Use
         ``separate_tracks=False`` to persist one conference mix.
         """
+        self.start()
         return AudioRecorder(self, destination, format=format, separate_tracks=separate_tracks).start()
 
     def ingest(

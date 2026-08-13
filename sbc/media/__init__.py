@@ -1292,6 +1292,10 @@ class _LiveKitPublisher:
             task.add_done_callback(self.receive_tasks.discard)
         await self.room.connect(url, token, rtc.RoomOptions(auto_subscribe=True))
 
+    async def receive(self, url: str, token: str) -> None:
+        """Connect only for remote participant audio capture."""
+        await self._connect(url, token)
+
     async def _consume_remote_audio(self, track: Any, participant: Any) -> None:
         """Forward individual LiveKit participant audio tracks to SBC."""
         from livekit import rtc
@@ -1771,6 +1775,25 @@ class MediaController:
             self._listener.on_connection_ready = self._restore_input_mode
             self._listener.on_audio_frame = self._capture_listener_audio
         self._listener.submit(self._listener.join()).result()
+
+    def start_audio_capture(self) -> None:
+        """Connect the correct BBB receive backend for ``client.audio``."""
+        backend = self._media_backend()
+        if backend.get("audioBridge") == "bbb-webrtc-sfu":
+            # A full-audio peer already receives the mix after it is active;
+            # otherwise use BBB's actual listener endpoint.
+            if self._sfu is not None and self._sfu._ready:
+                return
+            if self._listener is None or not self._listener._ready:
+                self._join_listener()
+            return
+        if backend.get("livekit_token"):
+            url, token = self._credentials()
+            self._publisher().submit(self._publisher().receive(url, token)).result()
+            return
+        raise MediaConnectionError(
+            f"incoming audio capture is unavailable for BBB audio backend {backend.get('audioBridge')!r}"
+        )
 
     def _capture_listener_audio(self, frame: Any) -> None:
         """Adapt BBB's decoded listener mix into the public audio API."""

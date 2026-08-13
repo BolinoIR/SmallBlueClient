@@ -234,6 +234,7 @@ class TranscriptionController:
         compute_type: str = "default",
     ) -> LiveTranscription:
         """Start a local faster-whisper worker and return its session handle."""
+        self.audio.start()
         session = LiveTranscription(
             self, model=model, language=language, chunk_seconds=chunk_seconds,
             users=users, device=device, compute_type=compute_type,

@@ -1,5 +1,14 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.4.1 — Incoming audio capture activation
+
+- Made ``client.audio.record()`` and ``client.transcription.start()`` open the
+  appropriate BBB receive backend automatically. A newly-created client now
+  actively starts its listener/LiveKit capture path before waiting for audio.
+- Captured the inbound conference mix from full-audio peers as well as
+  listener peers, and finalized robust MP3/FLAC/Ogg/Opus recording conversion
+  on Windows.
+
 ## 0.4.0 — Incoming audio capture and local transcription
 
 - Added ``client.audio`` for decoded incoming BBB PCM frames, live frame

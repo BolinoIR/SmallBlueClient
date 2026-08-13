@@ -23,6 +23,16 @@ class _Client:
         self.events.append((event, args[0] if args else None))
 
 
+class _MediaClient(_Client):
+    def __init__(self) -> None:
+        super().__init__()
+        self.starts = 0
+        self.media = SimpleNamespace(start_audio_capture=self._start_audio_capture)
+
+    def _start_audio_capture(self) -> None:
+        self.starts += 1
+
+
 class _Segment:
     def __init__(self, start: float, end: float, text: str) -> None:
         self.start, self.end, self.text, self.avg_logprob = start, end, text, -0.2
@@ -53,6 +63,16 @@ class AudioCaptureTests(unittest.TestCase):
         self.assertEqual(track.user_id, "u-1")
         self.assertEqual(track.frames_received, 1)
         self.assertIn(("audio_frame", frame), self.client.events)
+
+    def test_recording_starts_capture_backend_once(self) -> None:
+        client = _MediaClient()
+        audio = AudioController(client)
+        with tempfile.TemporaryDirectory() as temp:
+            first = audio.record(temp)
+            second = audio.record(temp)
+            self.assertEqual(client.starts, 1)
+            first.stop()
+            second.stop()
 
     def test_wav_recording_creates_separate_tracks_and_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
