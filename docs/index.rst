@@ -54,6 +54,7 @@ Build a small bot with the synchronous API:
    guides/controllers
    guides/events
    guides/media
+   guides/audio
    guides/reliability
    guides/cli
    guides/bots

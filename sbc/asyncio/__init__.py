@@ -95,6 +95,45 @@ class _AsyncProxy:
         return call
 
 
+class _AsyncAudioController:
+    """Async access to incoming audio without wrapping its async iterator."""
+
+    def __init__(self, target: Any) -> None:
+        self._target = target
+
+    async def tracks(self) -> list[Any]:
+        return await asyncio.to_thread(self._target.tracks)
+
+    async def record(self, *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.to_thread(self._target.record, *args, **kwargs)
+
+    async def add_listener(self, listener: Callable[..., Any]) -> Any:
+        return await asyncio.to_thread(self._target.add_listener, listener)
+
+    async def remove_listener(self, listener: Callable[..., Any]) -> None:
+        await asyncio.to_thread(self._target.remove_listener, listener)
+
+    def frames(self, *, maxsize: int = 256):
+        """Return SBC's native async PCM-frame iterator unchanged."""
+        return self._target.frames(maxsize=maxsize)
+
+
+class _AsyncTranscriptionController:
+    """Awaitable lifecycle methods for local transcription sessions."""
+
+    def __init__(self, target: Any) -> None:
+        self._target = target
+
+    async def start(self, **kwargs: Any) -> Any:
+        return await asyncio.to_thread(self._target.start, **kwargs)
+
+    async def export(self, *args: Any, **kwargs: Any) -> Any:
+        return await asyncio.to_thread(self._target.export, *args, **kwargs)
+
+    async def close(self) -> None:
+        await asyncio.to_thread(self._target.close)
+
+
 class AsyncSBCClient:
     """Async context manager with native GraphQL and compatible controllers.
 
@@ -124,6 +163,8 @@ class AsyncSBCClient:
         self.meeting = _AsyncProxy(self._sync.meeting)
         self.presentation = self.presentations = _AsyncProxy(self._sync.presentation)
         self.media = _AsyncProxy(self._sync.media)
+        self.audio = _AsyncAudioController(self._sync.audio)
+        self.transcription = _AsyncTranscriptionController(self._sync.transcription)
         self.polls = _AsyncProxy(self._sync.polls)
         self.breakouts = self.breakout_rooms = _AsyncProxy(self._sync.breakouts)
         self.cameras = _AsyncProxy(self._sync.cameras)

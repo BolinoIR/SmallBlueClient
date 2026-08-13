@@ -81,6 +81,16 @@ class CaptionProvider(StringEnum):
     GLADIA = "gladia"
 
 
+class TranscriptionModel(StringEnum):
+    """Named local faster-whisper model sizes accepted by SBC."""
+
+    TINY = "tiny"
+    BASE = "base"
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE_V3 = "large-v3"
+
+
 class Reaction(StringEnum):
     """Source-defined user activity signs accepted by BBB."""
 
@@ -131,6 +141,9 @@ class Event(StringEnum):
     BREAKOUT_UPDATED = BreakoutLifecycle.UPDATED.value
     BREAKOUT_ENDED = BreakoutLifecycle.ENDED.value
     PLUGIN_DATA = "plugin_data"
+    AUDIO_FRAME = "audio_frame"
+    TRANSCRIPT_SEGMENT = "transcript_segment"
+    TRANSCRIPT_FINAL = "transcript_final"
     ERROR = "error"
 
 

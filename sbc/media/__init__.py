@@ -173,6 +173,10 @@ class _SFUAudioPublisher:
         # mode with the active publisher so automatic recovery uses the same
         # successful route.
         self._active_force_relay = False
+        # Full-audio connections can receive the same conference mix as a
+        # listener. MediaController assigns this when it exposes capture.
+        self.on_audio_frame: Any | None = None
+        self._receive_tasks: set[asyncio.Task[Any]] = set()
     def _run(self): asyncio.set_event_loop(self.loop); self.loop.run_forever()
     def submit(self, coroutine): return asyncio.run_coroutine_threadsafe(coroutine, self.loop)
     def _url(self) -> str:
@@ -404,6 +408,14 @@ class _SFUAudioPublisher:
         # transport to fail even though candidate gathering completed.
         self._audio_sender = self.pc.addTrack(track) if offering else None
         connected = asyncio.Event()
+
+        @self.pc.on("track")
+        def on_track(remote_track: Any) -> None:
+            if getattr(remote_track, "kind", None) != "audio":
+                return
+            task = asyncio.create_task(self._consume_incoming_audio_track(remote_track))
+            self._receive_tasks.add(task)
+            task.add_done_callback(self._receive_tasks.discard)
         @self.pc.on("connectionstatechange")
         def on_connection_state_change():
             self.connection_state = self.pc.connectionState
@@ -475,6 +487,18 @@ class _SFUAudioPublisher:
         # signalling lease alive for long-running bots.
         self._heartbeat_task = asyncio.create_task(self._heartbeat())
         self._notify_connection_ready()
+
+    async def _consume_incoming_audio_track(self, track: Any) -> None:
+        """Forward a full-audio conference mix to the public capture layer."""
+        try:
+            while not self._stopping:
+                frame = await track.recv()
+                callback = self.on_audio_frame
+                if callback is not None:
+                    callback(frame)
+        except Exception as exc:
+            if not self._stopping:
+                get_logger().debug("BBB full-audio receive track ended: %s", exc)
 
     def _notify_connection_ready(self) -> None:
         """Reapply the BBB input-mode UI state after an SFU reconnection."""
@@ -691,6 +715,12 @@ class _SFUAudioPublisher:
                               force_relay=self._active_force_relay)
         get_logger().info("BBB audio sender recovered")
     async def _dispose(self) -> None:
+        tasks = tuple(self._receive_tasks)
+        self._receive_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         self._ready = False
         task = self._signal_task
         self._signal_task = None
@@ -731,6 +761,11 @@ class _SFUListener(_SFUAudioPublisher):
     def __init__(self, session: Any):
         super().__init__(session)
         self._listener_active = False
+        # Assigned by ``MediaController``.  The standard BBB listener stream
+        # is a conference mix; deployments with participant-labelled tracks
+        # can replace this callback with their own metadata resolver.
+        self.on_audio_frame: Any | None = None
+        self._receive_tasks: set[asyncio.Task[Any]] = set()
 
     async def join(self) -> None:
         await self.close()
@@ -770,6 +805,14 @@ class _SFUListener(_SFUAudioPublisher):
 
         self.pc = RTCPeerConnection(self._ice_configuration(force_relay=force_relay))
         connected = asyncio.Event()
+
+        @self.pc.on("track")
+        def on_track(track: Any) -> None:
+            if getattr(track, "kind", None) != "audio":
+                return
+            task = asyncio.create_task(self._consume_audio_track(track))
+            self._receive_tasks.add(task)
+            task.add_done_callback(self._receive_tasks.discard)
 
         @self.pc.on("connectionstatechange")
         def on_connection_state_change():
@@ -846,6 +889,29 @@ class _SFUListener(_SFUAudioPublisher):
         self._active_force_relay = force_relay
         self._signal_task = asyncio.create_task(self._listen_for_signals())
         self._notify_connection_ready()
+
+    async def _consume_audio_track(self, track: Any) -> None:
+        """Forward the decoded listener track without blocking WebRTC I/O."""
+        try:
+            while self._listener_active and not self._stopping:
+                frame = await track.recv()
+                callback = self.on_audio_frame
+                if callback is not None:
+                    callback(frame)
+        except Exception as exc:
+            # Remote tracks normally end during reconnect/close.  Only log an
+            # unexpected receiver failure while the session is still live.
+            if self._listener_active and not self._stopping:
+                get_logger().debug("BBB listener receive track ended: %s", exc)
+
+    async def _dispose(self) -> None:
+        tasks = tuple(self._receive_tasks)
+        self._receive_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await super()._dispose()
 
     async def _reconnect(self) -> None:
         try:
@@ -1202,6 +1268,8 @@ class _LiveKitPublisher:
         self.tracks: dict[str, Any] = {}
         self.publications: dict[str, Any] = {}
         self.tasks: dict[str, asyncio.Task] = {}
+        self.receive_tasks: set[asyncio.Task[Any]] = set()
+        self.on_audio_frame: Any | None = None
 
     def _run(self) -> None:
         asyncio.set_event_loop(self.loop)
@@ -1215,7 +1283,36 @@ class _LiveKitPublisher:
         if self.room is not None:
             return
         self.room = rtc.Room()
-        await self.room.connect(url, token, rtc.RoomOptions(auto_subscribe=False))
+        @self.room.on("track_subscribed")
+        def on_track_subscribed(track: Any, _publication: Any, participant: Any) -> None:
+            if int(getattr(track, "kind", 0)) != int(rtc.TrackKind.Value("KIND_AUDIO")):
+                return
+            task = asyncio.create_task(self._consume_remote_audio(track, participant))
+            self.receive_tasks.add(task)
+            task.add_done_callback(self.receive_tasks.discard)
+        await self.room.connect(url, token, rtc.RoomOptions(auto_subscribe=True))
+
+    async def _consume_remote_audio(self, track: Any, participant: Any) -> None:
+        """Forward individual LiveKit participant audio tracks to SBC."""
+        from livekit import rtc
+        stream = rtc.AudioStream(track, sample_rate=48_000, num_channels=1)
+        try:
+            async for event in stream:
+                frame = getattr(event, "frame", event)
+                callback = self.on_audio_frame
+                if callback is not None:
+                    callback(
+                        bytes(frame.data),
+                        sample_rate=int(frame.sample_rate),
+                        channels=int(frame.num_channels),
+                        user_id=getattr(participant, "identity", None),
+                        user_name=getattr(participant, "name", None) or getattr(participant, "identity", None),
+                    )
+        except Exception as exc:
+            get_logger().debug("LiveKit incoming audio track ended: %s", exc)
+        finally:
+            with contextlib.suppress(Exception):
+                await stream.aclose()
 
     async def _clear(self, kind: str) -> None:
         task = self.tasks.pop(kind, None)
@@ -1326,6 +1423,12 @@ class _LiveKitPublisher:
         (track.mute if muted else track.unmute)()
 
     async def close(self) -> None:
+        tasks = tuple(self.receive_tasks)
+        self.receive_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         for kind in tuple(self.tracks): await self._clear(kind)
         if self.room is not None:
             with contextlib.suppress(Exception): await self.room.disconnect()
@@ -1511,8 +1614,28 @@ class MediaController:
             if self._sfu is not None and self._sfu._active_file:
                 self.client.users.unmute(self.client.session.user_id or "")
     def _publisher(self) -> _LiveKitPublisher:
-        if self._instance is None: self._instance = _LiveKitPublisher()
+        if self._instance is None:
+            self._instance = _LiveKitPublisher()
+            self._instance.on_audio_frame = self._capture_livekit_audio
         return self._instance
+
+    def _capture_livekit_audio(
+        self,
+        pcm: bytes,
+        *,
+        sample_rate: int,
+        channels: int,
+        user_id: str | None,
+        user_name: str | None,
+    ) -> None:
+        """Adapt participant-labelled LiveKit PCM into ``client.audio``."""
+        try:
+            self.client.audio.ingest(
+                pcm, sample_rate=sample_rate, channels=channels,
+                user_id=user_id, user_name=user_name, source="livekit",
+            )
+        except Exception as exc:
+            get_logger().debug("Could not capture LiveKit audio frame: %s", exc)
     def _credentials(self) -> tuple[str, str]:
         livekit = self.client.session.snapshot.get("livekit") or {}
         cached = livekit.get("token") or self.client.session.snapshot.get("livekit_token")
@@ -1646,7 +1769,20 @@ class MediaController:
         if self._listener is None:
             self._listener = _SFUListener(self.client.session)
             self._listener.on_connection_ready = self._restore_input_mode
+            self._listener.on_audio_frame = self._capture_listener_audio
         self._listener.submit(self._listener.join()).result()
+
+    def _capture_listener_audio(self, frame: Any) -> None:
+        """Adapt BBB's decoded listener mix into the public audio API."""
+        try:
+            self.client.audio.ingest_av_frame(
+                frame,
+                user_name="Conference mix",
+                mixed=True,
+                source="bbb-webrtc-sfu",
+            )
+        except Exception as exc:
+            get_logger().debug("Could not capture BBB listener audio frame: %s", exc)
     def _leave_listener(self) -> None:
         if self._listener is not None:
             self._listener.submit(self._listener.close()).result()
@@ -1663,6 +1799,7 @@ class MediaController:
         if self._sfu is None:
             self._sfu = _SFUAudioPublisher(self.client.session)
             self._sfu.on_connection_ready = self._restore_input_mode
+            self._sfu.on_audio_frame = self._capture_listener_audio
         self._sfu.submit(self._sfu.warmup()).result()
         # The connection is real full audio, but its silent source must remain
         # muted until a script explicitly plays audio.
@@ -1681,6 +1818,7 @@ class MediaController:
             if self._sfu is None:
                 self._sfu = _SFUAudioPublisher(self.client.session)
                 self._sfu.on_connection_ready = self._restore_input_mode
+                self._sfu.on_audio_frame = self._capture_listener_audio
             try:
                 self._sfu.submit(self._sfu.play(str(path), loop, gain_db=gain_db, fade_in=fade_in)).result()
             except MediaConnectionError:
@@ -1692,6 +1830,7 @@ class MediaController:
                 self._sfu.submit(self._sfu.close()).result()
                 self._sfu = _SFUAudioPublisher(self.client.session)
                 self._sfu.on_connection_ready = self._restore_input_mode
+                self._sfu.on_audio_frame = self._capture_listener_audio
                 self._sfu.submit(self._sfu.play(str(path), loop, gain_db=gain_db, fade_in=fade_in)).result()
             self._mute("audio", False)
             self._verify_audio_input_state()

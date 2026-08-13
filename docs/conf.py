@@ -9,12 +9,11 @@ sys.path.insert(0, str(ROOT))
 
 project = "SmallBlueClient"
 author = "SmallBlueClient community"
-release = "0.3.2"
+release = "0.4.0"
 extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
-    "sphinx.ext.intersphinx",
     "sphinx.ext.viewcode",
     "myst_parser",
 ]
@@ -34,5 +33,4 @@ html_theme_options = {
     "source_branch": "main",
     "source_directory": "docs/",
 }
-intersphinx_mapping = {"python": ("https://docs.python.org/3", None)}
 myst_enable_extensions = ["colon_fence", "deflist", "fieldlist", "linkify", "tasklist"]

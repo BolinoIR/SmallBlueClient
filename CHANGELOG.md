@@ -1,5 +1,20 @@
 # Changelog — Legacy Extension → SmallBlueClient 0.1.0
 
+## 0.4.0 — Incoming audio capture and local transcription
+
+- Added ``client.audio`` for decoded incoming BBB PCM frames, live frame
+  listeners/async iterators, track metadata, and recording manifests.
+- Added lossless WAV recording plus PyAV-backed MP3, FLAC, Ogg, and Opus
+  exports. Per-user files are the default whenever a backend exposes
+  participant-labelled receive tracks.
+- Added ``client.transcription`` with a local, optional ``faster-whisper``
+  runtime, live ``transcript_segment``/``transcript_final`` events, bounded
+  chunk processing, and SRT/VTT/TXT/JSON exports.
+- Connected BBB WebRTC SFU listener audio to SBC capture as an explicitly
+  labelled conference-mix track and connected LiveKit remote audio tracks as
+  participant-labelled sources.
+- Added ``sbc transcribe`` and the ``examples/live_transcription.py`` guide.
+
 ## 0.3.2 — TURN session diagnostics
 
 - Added precise recovery guidance when BBB cannot associate a saved HTTP

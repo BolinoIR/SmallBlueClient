@@ -24,7 +24,8 @@ EVENTS = (
     "external_video_stopped", "poll_updated", "poll_published", "poll_ended", "poll_results_changed",
     "timer_updated", "timer_started", "timer_stopped", "timer_elapsed", "current_user_updated",
     "current_user_joined", "current_user_left", "current_user_ejected", "action_started", "action_completed",
-    "action_failed", "breakout_created", "breakout_started", "breakout_ended", "breakout_updated", "plugin_data", "error",
+    "action_failed", "breakout_created", "breakout_started", "breakout_ended", "breakout_updated", "plugin_data",
+    "audio_frame", "transcript_segment", "transcript_final", "error",
 ) + TABLE_EVENTS
 
 

@@ -32,6 +32,14 @@ Core and integration API
    :members:
    :no-index:
 
+.. automodule:: sbc.audio
+   :members:
+   :no-index:
+
+.. automodule:: sbc.transcription
+   :members:
+   :no-index:
+
 .. automodule:: sbc.bridge
    :members:
    :no-index:

@@ -30,6 +30,7 @@ automation, media, events, models, reconnects, and controllers live in Python.
 | **Bots** | welcome users, moderate rooms, react to events, manage breakouts |
 | **Automation** | chat, polls, captions, presentations, cameras, timers, recordings |
 | **Custom media** | publish Python-controlled audio, video, and mutable visual screenshares where supported by BBB |
+| **Capture + transcripts** | record incoming conference/per-user tracks and generate local SRT/VTT/TXT/JSON transcripts |
 | **Typed code** | controllers, enums, models, generated schema catalog, async API |
 | **Multiple meetings** | one independent `sbc.client("meeting.sbc")` per session |
 
@@ -37,6 +38,12 @@ automation, media, events, models, reconnects, and controllers live in Python.
 
 ```bash
 pip install SmallBlueClient
+```
+
+For local live transcription:
+
+```bash
+pip install "SmallBlueClient[transcription]"
 ```
 
 ```python
@@ -49,6 +56,26 @@ with sbc.client("teacher.sbc") as client:
 
 Read the complete guides and generated API reference at
 **[sbc.protobuf.lol](https://sbc.protobuf.lol)**.
+
+### Incoming audio and transcripts
+
+```python
+with sbc.client("teacher.sbc", listen_only=True) as client:
+    recording = client.audio.record("recordings")
+    transcript = client.transcription.start(model=sbc.TranscriptionModel.BASE)
+
+    @client.on(sbc.Event.TRANSCRIPT_SEGMENT)
+    def on_text(segment: sbc.TranscriptSegment) -> None:
+        print(segment.user_name, segment.text)
+
+    input("Press Enter to finish: ")
+    transcript.stop()
+    transcript.export("recordings/meeting.srt")
+    recording.stop()
+```
+
+The BBB WebRTC SFU listener provides a conference mix. LiveKit participant
+tracks are recorded separately when the BBB deployment exposes them.
 
 See the full migration history in [CHANGELOG.md](CHANGELOG.md).
 

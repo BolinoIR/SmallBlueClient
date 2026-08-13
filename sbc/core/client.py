@@ -22,6 +22,8 @@ from .exceptions import ConnectionError, GraphQLError, SessionError
 from .logging import get_logger
 from ..models import ChatMessage, Meeting, Presentation, PresentationDocument, User
 from ..media import MediaController
+from ..audio import AudioController
+from ..transcription import TranscriptionController
 from ..operations import Actions
 from .session import SBCSession
 from ..schema import BBBTable, TABLE_EVENTS, schema
@@ -263,6 +265,10 @@ class SBCClient(EventEmitter):
         self.users = UsersController(self)
         self.presentation = PresentationController(self)
         self.media = MediaController(self)
+        # Incoming audio is separate from ``media.audio``, which publishes a
+        # local source.  The two controllers can be used together safely.
+        self.audio = AudioController(self)
+        self.transcription = TranscriptionController(self, self.audio)
         self.meeting = MeetingController(self)
         self.polls = PollsController(self)
         self.breakouts = BreakoutsController(self)
@@ -569,6 +575,7 @@ class SBCClient(EventEmitter):
         if lease and lease is not threading.current_thread():
             lease.join(timeout=1)
         self.transport.close()
+        self.transcription.close()
         self.media.close()
         if self._event_multiplexer is not None:
             self._event_multiplexer.close()

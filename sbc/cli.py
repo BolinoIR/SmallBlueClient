@@ -80,6 +80,34 @@ def command_endurance(args: argparse.Namespace) -> int:
         client.close()
 
 
+def command_transcribe(args: argparse.Namespace) -> int:
+    """Capture BBB incoming audio and write local transcript artifacts."""
+    client = _client(args)
+    try:
+        recording = client.audio.record(args.output, format=args.format, separate_tracks=not args.mix)
+        transcription = client.transcription.start(
+            model=args.model,
+            language=args.language,
+            chunk_seconds=args.chunk_seconds,
+            device=args.device,
+            compute_type=args.compute_type,
+        )
+        print(f"Capturing BBB audio for {args.minutes:g} minute(s). Press Ctrl+C to finish early.")
+        try:
+            import time
+            time.sleep(args.minutes * 60)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            transcription.stop()
+            paths = recording.stop()
+        transcript = transcription.export(Path(args.output) / f"transcript.{args.transcript_format}", format=args.transcript_format)
+        _emit({"audio_tracks": {key: str(value) for key, value in paths.items()}, "transcript": str(transcript)}, args.json)
+        return 0
+    finally:
+        client.close()
+
+
 def command_run(args: argparse.Namespace) -> int:
     env = os.environ.copy(); env["SBC_SESSION"] = str(Path(args.session).resolve())
     return subprocess.call([sys.executable, args.script, args.session, *args.arguments], env=env)
@@ -100,6 +128,16 @@ def parser() -> argparse.ArgumentParser:
             item.add_argument("--audio"); item.add_argument("--gain-db", type=float, default=0); item.add_argument("--fade-in", type=float, default=0)
             item.add_argument("--no-media", action="store_true"); item.add_argument("--output", default="sbc-endurance-report.json")
         item.set_defaults(action=action)
+    item = commands.add_parser("transcribe", help="record BBB incoming audio and generate a local transcript")
+    item.add_argument("session"); item.add_argument("--json", action="store_true")
+    item.add_argument("--no-auto-join", action="store_true"); item.add_argument("--microphone", action="store_true")
+    item.add_argument("--minutes", type=float, default=5); item.add_argument("--output", default="sbc-transcript")
+    item.add_argument("--format", default="wav", choices=("wav", "mp3", "flac", "ogg", "opus"))
+    item.add_argument("--transcript-format", default="srt", choices=("srt", "vtt", "txt", "json"))
+    item.add_argument("--model", default="base"); item.add_argument("--language")
+    item.add_argument("--chunk-seconds", type=float, default=5); item.add_argument("--device", default="auto")
+    item.add_argument("--compute-type", default="default"); item.add_argument("--mix", action="store_true")
+    item.set_defaults(action=command_transcribe)
     item = commands.add_parser("run", help="run a bot script with SBC_SESSION set")
     item.add_argument("script"); item.add_argument("session"); item.add_argument("arguments", nargs=argparse.REMAINDER); item.set_defaults(action=command_run)
     return root

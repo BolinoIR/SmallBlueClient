@@ -1,6 +1,12 @@
 Examples
 ========
 
+Incoming audio and local transcription
+--------------------------------------
+
+``live_transcription.py`` records the active BBB audio stream and creates local
+SRT/JSON transcripts using the optional ``faster-whisper`` integration.
+
 SmallBlueClient has a compact API for simple scripts and a complete event system
 for long-running bots. Every example starts from a session exported by the SBC
 Session Extractor.
