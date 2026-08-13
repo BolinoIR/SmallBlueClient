@@ -7,6 +7,11 @@ Incoming audio and local transcription
 ``live_transcription.py`` records the active BBB audio stream and creates local
 SRT/JSON transcripts using the optional ``faster-whisper`` integration.
 
+``live_transcript_textboard.py`` combines a mutable visual screenshare with
+BBB's live speaker activity and SBC's local transcript events. It displays the
+currently talking people and the newest recognized lines without restarting
+the active share.
+
 SmallBlueClient has a compact API for simple scripts and a complete event system
 for long-running bots. Every example starts from a session exported by the SBC
 Session Extractor.
